@@ -1,0 +1,175 @@
+import type { JiraIssue, JiraUser, JiraWorklog } from "@/lib/jira/types";
+
+const PAGE_SIZE = 50;
+
+function getRequiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required Jira env var: ${name}`);
+  }
+  return value;
+}
+
+function getBaseUrl(): string {
+  return getRequiredEnv("JIRA_BASE_URL").replace(/\/$/, "");
+}
+
+function getAuthHeader(): string {
+  const email = getRequiredEnv("JIRA_EMAIL");
+  const token = getRequiredEnv("JIRA_API_TOKEN");
+  return `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}`;
+}
+
+async function jiraFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${getBaseUrl()}${path}`, {
+    ...init,
+    headers: {
+      Accept: "application/json",
+      Authorization: getAuthHeader(),
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {})
+    },
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Jira request failed: ${response.status} ${response.statusText} ${message}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+export function isJiraConfigured(): boolean {
+  return Boolean(process.env.JIRA_BASE_URL && process.env.JIRA_EMAIL && process.env.JIRA_API_TOKEN);
+}
+
+export function getJiraBaseUrl(): string | undefined {
+  return process.env.JIRA_BASE_URL?.replace(/\/$/, "");
+}
+
+export async function fetchAllUsers(): Promise<JiraUser[]> {
+  const users: JiraUser[] = [];
+  let startAt = 0;
+
+  while (true) {
+    const page = await jiraFetch<
+      Array<{ accountId?: string; displayName?: string; active?: boolean; emailAddress?: string; accountType?: string }>
+    >(`/rest/api/3/users?startAt=${startAt}&maxResults=${PAGE_SIZE}`);
+
+    if (page.length === 0) break;
+
+    for (const user of page) {
+      if (user.accountType === "app") continue;
+      if (!user.accountId || !user.displayName) continue;
+      users.push({
+        accountId: user.accountId,
+        displayName: user.displayName,
+        active: Boolean(user.active),
+        emailAddress: user.emailAddress
+      });
+    }
+
+    if (page.length < PAGE_SIZE) break;
+    startAt += page.length;
+  }
+
+  return users;
+}
+
+export async function searchIssuesWithWorklogs(args: {
+  from: string;
+  to: string;
+  projectKeys?: string[];
+}): Promise<JiraIssue[]> {
+  const issues: JiraIssue[] = [];
+  const projectClause =
+    args.projectKeys && args.projectKeys.length
+      ? `project in (${args.projectKeys.map((key) => `"${key}"`).join(", ")}) AND `
+      : "";
+  const jql = `${projectClause}worklogDate >= "${args.from}" AND worklogDate <= "${args.to}"`;
+  let nextPageToken: string | undefined;
+
+  while (true) {
+    const page = await jiraFetch<{
+      issues?: Array<{
+        id: string;
+        key: string;
+        fields?: {
+          summary?: string;
+          project?: { key?: string; name?: string };
+          status?: { name?: string };
+          assignee?: { accountId?: string; displayName?: string };
+        };
+      }>;
+      isLast?: boolean;
+      nextPageToken?: string;
+    }>("/rest/api/3/search/jql", {
+      method: "POST",
+      body: JSON.stringify({
+        jql,
+        fields: ["summary", "project", "status", "assignee"],
+        maxResults: PAGE_SIZE,
+        ...(nextPageToken ? { nextPageToken } : {})
+      })
+    });
+
+    for (const issue of page.issues ?? []) {
+      issues.push({
+        id: issue.id,
+        key: issue.key,
+        summary: issue.fields?.summary ?? issue.key,
+        projectKey: issue.fields?.project?.key ?? "UNKNOWN",
+        projectName: issue.fields?.project?.name,
+        statusName: issue.fields?.status?.name,
+        assigneeAccountId: issue.fields?.assignee?.accountId,
+        assigneeDisplayName: issue.fields?.assignee?.displayName
+      });
+    }
+
+    if (page.isLast || !page.nextPageToken) break;
+    nextPageToken = page.nextPageToken;
+  }
+
+  return issues;
+}
+
+export async function fetchIssueWorklogs(issue: JiraIssue): Promise<JiraWorklog[]> {
+  const result: JiraWorklog[] = [];
+  let startAt = 0;
+
+  while (true) {
+    const page = await jiraFetch<{
+      worklogs?: Array<{
+        id: string | number;
+        author?: { accountId?: string; displayName?: string };
+        started?: string;
+        timeSpentSeconds?: number;
+      }>;
+      total?: number;
+      startAt?: number;
+      maxResults?: number;
+    }>(`/rest/api/3/issue/${issue.key}/worklog?startAt=${startAt}&maxResults=${PAGE_SIZE}`);
+
+    for (const worklog of page.worklogs ?? []) {
+      if (!worklog.author?.accountId || !worklog.author?.displayName || !worklog.started) continue;
+      result.push({
+        id: String(worklog.id),
+        issueId: issue.id,
+        issueKey: issue.key,
+        issueSummary: issue.summary,
+        projectKey: issue.projectKey,
+        authorAccountId: worklog.author.accountId,
+        authorDisplayName: worklog.author.displayName,
+        started: worklog.started,
+        timeSpentSeconds: worklog.timeSpentSeconds ?? 0
+      });
+    }
+
+    const next = (page.startAt ?? 0) + (page.maxResults ?? PAGE_SIZE);
+    if (next >= (page.total ?? 0) || (page.worklogs ?? []).length === 0) break;
+    startAt = next;
+  }
+
+  return result;
+}
