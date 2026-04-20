@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+import { getSession } from "@/lib/session";
 import { DashboardShell } from "@/components/DashboardShell";
 import { getDashboardData } from "@/lib/jira/dashboard";
 import { formatYmd, parseYmd, shiftDays, startOfWeekMonday, todayIST } from "@/lib/date-utils";
@@ -39,6 +41,10 @@ export default async function Home({
 }: {
   searchParams?: Promise<{ preset?: string; from?: string; to?: string; view?: string }>;
 }) {
+  const session = await getSession();
+  if (!session.user) redirect("/login");
+  if (session.user.role !== "admin") redirect("/time-logging");
+
   const params = (await searchParams) ?? {};
   const view = params.view === "sprints" ? "sprints" : "dashboard";
   const selectedRange = getPresetRange(params.preset, params.from, params.to);
@@ -53,6 +59,7 @@ export default async function Home({
       view={view}
       preset={selectedRange.preset}
       rangeLabel={selectedRange.label}
+      user={session.user}
     />
   );
 }

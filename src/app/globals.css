@@ -1262,6 +1262,392 @@ a {
   }
 }
 
+/* ─── Topbar user chip ──────────────────────────────── */
+
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.topbar-user-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* ─── Login screen ──────────────────────────────────── */
+
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 24px;
+}
+
+.login-card {
+  width: min(420px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 40px 36px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.07);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+
+.login-app-name {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.login-title {
+  margin: 0 0 10px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.login-copy {
+  margin: 0 0 28px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.login-error {
+  margin-bottom: 20px;
+  border-radius: 8px;
+  background: var(--danger-bg);
+  padding: 10px 14px;
+  color: var(--danger-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.atlassian-login-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  height: 44px;
+  border-radius: 10px;
+  background: #0052CC;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.atlassian-login-button:hover {
+  background: #0747A6;
+}
+
+.login-footer {
+  margin: 20px 0 0;
+  color: var(--muted-light);
+  font-size: 11.5px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* ─── Time Logging screen ───────────────────────────── */
+
+.timelog-main {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px 32px;
+}
+
+.timelog-form-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 28px;
+}
+
+.timelog-form-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: #fafbfc;
+}
+
+.timelog-form-title {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.timelog-form-sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.timelog-form-body {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.timelog-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.timelog-submit-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.timelog-success-msg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--success-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.timelog-error-msg {
+  color: var(--danger-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Issue search */
+.issue-search-wrap {
+  position: relative;
+}
+
+.issue-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  background: #fff;
+  border: 1px solid #e4e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.issue-dropdown-msg {
+  padding: 12px 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.issue-dropdown-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.issue-dropdown-item:hover {
+  background: #f5f7fa;
+}
+
+.issue-dropdown-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 3px;
+  flex-wrap: wrap;
+}
+
+.issue-dropdown-key {
+  color: #3b82f6;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.issue-dropdown-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.issue-dropdown-summary {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.issue-type-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.selected-issue-pill {
+  margin-top: 7px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: #f0f4ff;
+  border: 1px solid #c7d7fd;
+  border-radius: 8px;
+  padding: 6px 10px;
+  flex-wrap: wrap;
+}
+
+.selected-issue-key {
+  color: #3b82f6;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.selected-issue-summary {
+  flex: 1;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-issue-clear {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
+.selected-issue-clear:hover {
+  color: var(--text);
+}
+
+/* History table */
+.timelog-history-section {
+  margin-top: 8px;
+}
+
+.timelog-history-loading {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 20px 0;
+}
+
+.timelog-history-table {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.timelog-history-head,
+.timelog-history-row {
+  display: grid;
+  grid-template-columns: 110px minmax(200px, 2fr) 90px 80px 1fr;
+  gap: 16px;
+  align-items: center;
+}
+
+.timelog-history-head {
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.timelog-history-row {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 13px;
+}
+
+.timelog-history-row:last-child {
+  border-bottom: none;
+}
+
+.timelog-history-date {
+  color: var(--muted-mid);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.timelog-history-issue {
+  min-width: 0;
+}
+
+.timelog-history-project {
+  color: #374151;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.timelog-history-time {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.timelog-history-desc {
+  color: var(--muted-mid);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ─── Sprint Section ─────────────────────────────────── */
 
 .sprint-shell {

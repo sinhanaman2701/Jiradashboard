@@ -13,6 +13,12 @@ import {
 } from "@/lib/teams";
 import type { TeamRecord } from "@/lib/teams";
 
+interface SessionUser {
+  accountId: string;
+  displayName: string;
+  role: "admin" | "user";
+}
+
 const BAR_COLORS = [
   "#3b82f6",
   "#f97316",
@@ -31,6 +37,7 @@ interface DashboardShellProps {
   preset: Preset;
   rangeLabel: string;
   view: "dashboard" | "sprints";
+  user?: SessionUser;
 }
 
 function formatHours(value: number): string {
@@ -165,7 +172,7 @@ function SummaryStrip({ users }: { users: JiraUserSummary[] }) {
   );
 }
 
-export function DashboardShell({ data, preset, rangeLabel, view }: DashboardShellProps) {
+export function DashboardShell({ data, preset, rangeLabel, view, user }: DashboardShellProps) {
   const router = useRouter();
   const [teams, setTeams] = useState<TeamRecord[]>([]);
   const [selectedTeam, setSelectedTeam] = useState("");
@@ -218,6 +225,18 @@ export function DashboardShell({ data, preset, rangeLabel, view }: DashboardShel
         <div className="topbar-right">
           {view === "dashboard" && <span className="range-caption">{rangeLabel}</span>}
           <span className="live-dot" />
+          {user && (
+            <div className="topbar-user">
+              <div
+                className="topbar-avatar"
+                style={{ background: avatarColor(user.accountId) }}
+                aria-hidden="true"
+              >
+                {initials(user.displayName)}
+              </div>
+              <span className="topbar-user-name">{user.displayName}</span>
+            </div>
+          )}
           <Link className="settings-link" href="/settings">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="3" />
@@ -254,6 +273,13 @@ export function DashboardShell({ data, preset, rangeLabel, view }: DashboardShel
             </svg>
             Sprints
           </button>
+          <Link href="/time-logging" className="home-nav-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+            Time Logging
+          </Link>
         </aside>
 
         <div className="home-content">
