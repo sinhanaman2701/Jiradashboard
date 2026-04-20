@@ -1,29 +1,10 @@
-import { fetchAllUsers, fetchIssueWorklogs, getJiraBaseUrl, isJiraConfigured, searchIssuesWithWorklogs } from "@/lib/jira/client";
+import { fetchAllIssueWorklogs, getCachedUsers, getJiraBaseUrl, isJiraConfigured, searchIssuesWithWorklogs } from "@/lib/jira/client";
+import { IST_TIME_ZONE, formatYmd, parseYmd } from "@/lib/date-utils";
 import { mockIssues, mockUsers, mockWorklogs } from "@/lib/jira/mock-data";
 import type { JiraDashboardData, JiraIssue, JiraTrackingView, JiraUser, JiraUserPeriodSummary, JiraUserSummary, JiraWorklog } from "@/lib/jira/types";
 
-const IST_TIME_ZONE = "Asia/Kolkata";
-
 function pad(value: number): string {
   return value.toString().padStart(2, "0");
-}
-
-function formatYmd(date: Date): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: IST_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(date);
-  const year = parts.find((part) => part.type === "year")?.value ?? "1970";
-  const month = parts.find((part) => part.type === "month")?.value ?? "01";
-  const day = parts.find((part) => part.type === "day")?.value ?? "01";
-  return `${year}-${month}-${day}`;
-}
-
-function parseYmd(value: string): Date {
-  const [year, month, day] = value.split("-").map(Number);
-  return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
 }
 
 function monthStart(date: Date): Date {
@@ -199,6 +180,8 @@ function buildData(args: {
   projectKeys: string[];
   users: JiraUser[];
   worklogs: JiraWorklog[];
+  allWorklogs: JiraWorklog[];
+  issueMap: Map<string, JiraIssue>;
   userQuery?: string;
 }): JiraDashboardData {
   const workingDates = getWorkingDates(args.from, args.to);
@@ -210,13 +193,33 @@ function buildData(args: {
     .filter((user) => !userQuery || user.displayName.toLowerCase().includes(userQuery))
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 
+  const allTimeTotals = new Map<string, Map<string, number>>();
+  for (const worklog of args.allWorklogs) {
+    let byIssue = allTimeTotals.get(worklog.authorAccountId);
+    if (!byIssue) {
+      byIssue = new Map();
+      allTimeTotals.set(worklog.authorAccountId, byIssue);
+    }
+    byIssue.set(worklog.issueKey, (byIssue.get(worklog.issueKey) ?? 0) + worklog.timeSpentSeconds);
+  }
+
   const summaries: JiraUserSummary[] = users.map((user) => {
     const dayMap = new Map<string, number>();
     const periodMap = buildPeriodMetadata(workingDates, args.trackingView);
-    const ticketMap = new Map<
-      string,
-      { issueKey: string; issueSummary: string; projectKey: string; loggedSeconds: number; loggedHours: number }
-    >();
+    const ticketMap = new Map<string, {
+      issueKey: string;
+      issueSummary: string;
+      projectKey: string;
+      spaceName: string;
+      epicKey?: string;
+      epicSummary?: string;
+      loggedSeconds: number;
+      loggedHours: number;
+      totalLoggedSeconds: number;
+      totalLoggedHours: number;
+    }>();
+
+    const userAllTimeTotals = allTimeTotals.get(user.accountId) ?? new Map<string, number>();
 
     for (const date of workingDates) {
       dayMap.set(date, 0);
@@ -247,17 +250,24 @@ function buildData(args: {
         }
       }
 
+      const issue = args.issueMap.get(worklog.issueKey);
       const existing = ticketMap.get(worklog.issueKey);
       if (existing) {
         existing.loggedSeconds += worklog.timeSpentSeconds;
         existing.loggedHours = toHours(existing.loggedSeconds);
       } else {
+        const totalLoggedSeconds = userAllTimeTotals.get(worklog.issueKey) ?? worklog.timeSpentSeconds;
         ticketMap.set(worklog.issueKey, {
           issueKey: worklog.issueKey,
           issueSummary: worklog.issueSummary,
           projectKey: worklog.projectKey,
+          spaceName: issue?.projectName ?? worklog.projectKey,
+          epicKey: issue?.epicKey,
+          epicSummary: issue?.epicSummary,
           loggedSeconds: worklog.timeSpentSeconds,
-          loggedHours: toHours(worklog.timeSpentSeconds)
+          loggedHours: toHours(worklog.timeSpentSeconds),
+          totalLoggedSeconds,
+          totalLoggedHours: toHours(totalLoggedSeconds)
         });
       }
     }
@@ -344,6 +354,8 @@ export async function getDashboardData(args: {
   const projectKeys = (args.projectKeys ?? []).filter(Boolean);
   const trackingView = args.trackingView ?? "daily";
 
+  const mockIssueMap = new Map(mockIssues.map((issue) => [issue.key, issue]));
+
   if (!isJiraConfigured()) {
     return buildData({
       mode: "mock",
@@ -353,15 +365,18 @@ export async function getDashboardData(args: {
       projectKeys: projectKeys.length ? projectKeys : mockProjectKeys(),
       users: mockUsers,
       worklogs: filterRange(mockWorklogs, from, to),
+      allWorklogs: mockWorklogs,
+      issueMap: mockIssueMap,
       userQuery: args.userQuery
     });
   }
 
   try {
-    const users = await fetchAllUsers();
+    const users = await getCachedUsers();
     const issues: JiraIssue[] = await searchIssuesWithWorklogs({ from, to, projectKeys });
-    const worklogLists = await Promise.all(issues.map((issue) => fetchIssueWorklogs(issue)));
-    const worklogs = filterRange(worklogLists.flat(), from, to);
+    const issueMap = new Map(issues.map((issue) => [issue.key, issue]));
+    const allWorklogs = await fetchAllIssueWorklogs(issues);
+    const worklogs = filterRange(allWorklogs, from, to);
 
     return buildData({
       mode: "live",
@@ -372,6 +387,8 @@ export async function getDashboardData(args: {
       projectKeys,
       users,
       worklogs,
+      allWorklogs,
+      issueMap,
       userQuery: args.userQuery
     });
   } catch (error) {
@@ -384,6 +401,8 @@ export async function getDashboardData(args: {
       projectKeys: projectKeys.length ? projectKeys : mockProjectKeys(),
       users: mockUsers,
       worklogs: filterRange(mockWorklogs, from, to),
+      allWorklogs: mockWorklogs,
+      issueMap: mockIssueMap,
       userQuery: args.userQuery
     });
   }

@@ -14,7 +14,9 @@ export const mockIssues: JiraIssue[] = [
     summary: "Implement dashboard summary cards",
     projectKey: "ENG",
     projectName: "Engineering",
-    statusName: "In Progress"
+    statusName: "In Progress",
+    epicKey: "ENG-50",
+    epicSummary: "Dashboard Q2 Initiative"
   },
   {
     id: "10002",
@@ -22,7 +24,9 @@ export const mockIssues: JiraIssue[] = [
     summary: "Integrate Jira users endpoint",
     projectKey: "ENG",
     projectName: "Engineering",
-    statusName: "In Review"
+    statusName: "In Review",
+    epicKey: "ENG-50",
+    epicSummary: "Dashboard Q2 Initiative"
   },
   {
     id: "10003",

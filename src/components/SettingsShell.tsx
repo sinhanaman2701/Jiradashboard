@@ -2,16 +2,12 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import type { JiraUserSummary } from "@/lib/jira/types";
+import type { JiraUser } from "@/lib/jira/types";
 import {
   TEAM_COLOR_TOKENS,
-  type TeamColor,
   type TeamRecord,
   avatarColor,
   initials,
-  readTeamsFromStorage,
-  slugify,
-  writeTeamsToStorage
 } from "@/lib/teams";
 
 function UsersIcon() {
@@ -25,190 +21,37 @@ function UsersIcon() {
   );
 }
 
-const NAV_SECTIONS = [
-  {
-    id: "manage-team",
-    label: "Manage Team",
-    description: "Create teams, assign members, and manage roles.",
-    icon: <UsersIcon />
-  }
-] as const;
+function ExternalLinkIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
+  );
+}
 
-function TeamTag({
-  name,
-  color,
-  onRemove
-}: {
-  name: string;
-  color: TeamColor;
-  onRemove?: () => void;
-}) {
+function TeamTag({ name, color }: { name: string; color: TeamRecord["color"] }) {
   const token = TEAM_COLOR_TOKENS[color];
   return (
     <span className="team-tag" style={{ background: token.bg, color: token.text }}>
       <span className="team-tag-dot" style={{ background: token.dot }} />
       {name}
-      {onRemove ? (
-        <button type="button" className="tag-remove-button" onClick={onRemove}>
-          ×
-        </button>
-      ) : null}
     </span>
   );
 }
 
-function TeamModal({
-  mode,
-  team,
-  existing,
-  onClose,
-  onSubmit,
-  onDelete
-}: {
-  mode: "create" | "edit";
-  team?: TeamRecord;
-  existing: TeamRecord[];
-  onClose: () => void;
-  onSubmit: (team: TeamRecord) => void;
-  onDelete?: (id: string) => void;
-}) {
-  const colors = Object.keys(TEAM_COLOR_TOKENS) as TeamColor[];
-  const [name, setName] = useState(team?.name ?? "");
-  const [color, setColor] = useState<TeamColor>(team?.color ?? "blue");
-  const [error, setError] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState(false);
-
-  function submit() {
-    const trimmed = name.trim();
-    if (!trimmed) {
-      setError("Team name is required.");
-      return;
-    }
-
-    if (
-      existing.some(
-        (entry) =>
-          entry.id !== team?.id && entry.name.toLowerCase() === trimmed.toLowerCase()
-      )
-    ) {
-      setError(mode === "create" ? "A team with that name already exists." : "Name already taken.");
-      return;
-    }
-
-    onSubmit({
-      id: team?.id ?? slugify(trimmed),
-      name: trimmed,
-      color,
-      members: team?.members ?? []
-    });
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="modal-panel">
-        <div className="modal-title">{mode === "create" ? "New Team" : "Edit Team"}</div>
-        <div className="modal-copy">
-          {mode === "create"
-            ? "Teams let you filter and group members on the dashboard."
-            : "Update the team name and color or delete this team."}
-        </div>
-
-        <div className="modal-fields">
-          <div>
-            <label className="field-label">Team Name</label>
-            <input
-              autoFocus
-              className={`field-control ${error ? "field-control-error" : ""}`}
-              type="text"
-              value={name}
-              onChange={(event) => {
-                setName(event.target.value);
-                setError("");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") submit();
-              }}
-              placeholder="e.g. Frontend, Design, Platform"
-            />
-            {error ? <div className="inline-error">{error}</div> : null}
-          </div>
-
-          <div>
-            <label className="field-label">Color</label>
-            <div className="color-picker-row">
-              {colors.map((entry) => {
-                const token = TEAM_COLOR_TOKENS[entry];
-                return (
-                  <button
-                    key={entry}
-                    type="button"
-                    className={`color-choice ${color === entry ? "selected" : ""}`}
-                    style={{ borderColor: color === entry ? token.dot : "#e4e8f0" }}
-                    onClick={() => setColor(entry)}
-                  >
-                    <span className="team-tag-dot" style={{ background: token.dot }} />
-                    {entry.charAt(0).toUpperCase() + entry.slice(1)}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        {mode === "edit" && onDelete && team ? (
-          confirmDelete ? (
-            <div className="confirm-delete-box">
-              <span>Delete &quot;{team.name}&quot;? This will remove all member assignments.</span>
-              <div className="confirm-delete-actions">
-                <button type="button" className="delete-ghost" onClick={() => setConfirmDelete(false)}>
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="confirm-delete-button"
-                  onClick={() => onDelete(team.id)}
-                >
-                  Yes, delete
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="danger-zone">
-              <button type="button" className="delete-ghost" onClick={() => setConfirmDelete(true)}>
-                Delete team
-              </button>
-            </div>
-          )
-        ) : null}
-
-        <div className="modal-actions">
-          <button type="button" className="secondary-button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="button" className="primary-button" onClick={submit}>
-            {mode === "create" ? "Create Team" : "Save Changes"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export function SettingsShell({ users }: { users: JiraUserSummary[] }) {
-  const [activeSection] = useState("manage-team");
+export function SettingsShell({ users }: { users: JiraUser[] }) {
   const [teams, setTeams] = useState<TeamRecord[]>([]);
+  const [teamsLoading, setTeamsLoading] = useState(true);
   const [query, setQuery] = useState("");
-  const [createOpen, setCreateOpen] = useState(false);
-  const [editingTeam, setEditingTeam] = useState<TeamRecord | null>(null);
-  const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
 
   useEffect(() => {
-    setTeams(readTeamsFromStorage());
+    fetch("/api/teams")
+      .then((res) => res.json())
+      .then((data: TeamRecord[]) => { setTeams(data); setTeamsLoading(false); })
+      .catch(() => setTeamsLoading(false));
   }, []);
-
-  useEffect(() => {
-    writeTeamsToStorage(teams);
-  }, [teams]);
 
   const filteredUsers = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -222,41 +65,10 @@ export function SettingsShell({ users }: { users: JiraUserSummary[] }) {
     });
   }, [query, users]);
 
-  function upsertTeam(team: TeamRecord) {
-    setTeams((current) => {
-      const existing = current.some((entry) => entry.id === team.id);
-      if (!existing) return [...current, team];
-      return current.map((entry) => (entry.id === team.id ? team : entry));
-    });
-    setCreateOpen(false);
-    setEditingTeam(null);
-  }
-
-  function deleteTeam(teamId: string) {
-    setTeams((current) => current.filter((team) => team.id !== teamId));
-    setEditingTeam(null);
-  }
-
-  function removeUserFromTeam(teamId: string, userId: string) {
-    setTeams((current) =>
-      current.map((team) =>
-        team.id === teamId
-          ? { ...team, members: team.members.filter((member) => member !== userId) }
-          : team
-      )
-    );
-  }
-
-  function addUserToTeam(teamId: string, userId: string) {
-    setTeams((current) =>
-      current.map((team) =>
-        team.id === teamId && !team.members.includes(userId)
-          ? { ...team, members: [...team.members, userId] }
-          : team
-      )
-    );
-    setExpandedUserId(null);
-  }
+  const orgId = process.env.NEXT_PUBLIC_ATLASSIAN_ORG_ID;
+  const manageTeamsUrl = orgId
+    ? `https://admin.atlassian.com/o/${orgId}/teams`
+    : "https://admin.atlassian.com";
 
   return (
     <div className="settings-screen">
@@ -288,16 +100,10 @@ export function SettingsShell({ users }: { users: JiraUserSummary[] }) {
       <div className="settings-layout">
         <aside className="settings-sidebar">
           <div className="settings-sidebar-label">Settings</div>
-          {NAV_SECTIONS.map((section) => (
-            <button
-              key={section.id}
-              type="button"
-              className={`settings-nav-item ${activeSection === section.id ? "active" : ""}`}
-            >
-              <span className="settings-nav-icon">{section.icon}</span>
-              <span>{section.label}</span>
-            </button>
-          ))}
+          <button type="button" className="settings-nav-item active">
+            <span className="settings-nav-icon"><UsersIcon /></span>
+            <span>Manage Team</span>
+          </button>
         </aside>
 
         <main className="settings-main">
@@ -305,28 +111,30 @@ export function SettingsShell({ users }: { users: JiraUserSummary[] }) {
             <div>
               <h1 className="settings-main-title">Manage Team</h1>
               <p className="settings-main-copy">
-                Create teams, assign members, and manage roles.
+                Teams are synced from your Atlassian organisation.
               </p>
             </div>
-            <button type="button" className="primary-button" onClick={() => setCreateOpen(true)}>
-              + Create Team
-            </button>
+            <a
+              href={manageTeamsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="primary-button"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, textDecoration: "none" }}
+            >
+              Manage in Jira <ExternalLinkIcon />
+            </a>
           </div>
 
-          {teams.length > 0 ? (
+          {teamsLoading ? (
+            <div className="settings-empty-note" style={{ padding: "16px 0" }}>Loading teams…</div>
+          ) : teams.length > 0 ? (
             <div className="team-chip-row">
               {teams.map((team) => (
-                <button
-                  key={team.id}
-                  type="button"
-                  className="team-chip-button"
-                  onClick={() => setEditingTeam(team)}
-                >
+                <div key={team.id} className="team-chip-button" style={{ cursor: "default" }}>
                   <span className="team-tag-dot" style={{ background: TEAM_COLOR_TOKENS[team.color].dot }} />
                   <span>{team.name}</span>
                   <span className="team-chip-count">{team.members.length}</span>
-                  <span className="team-chip-edit">✎</span>
-                </button>
+                </div>
               ))}
             </div>
           ) : null}
@@ -340,7 +148,7 @@ export function SettingsShell({ users }: { users: JiraUserSummary[] }) {
               className="settings-search"
               type="text"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              onChange={(e) => setQuery(e.target.value)}
               placeholder="Search users"
             />
           </div>
@@ -348,74 +156,25 @@ export function SettingsShell({ users }: { users: JiraUserSummary[] }) {
           <div className="settings-user-list">
             {filteredUsers.map((user) => {
               const userTeams = teams.filter((team) => team.members.includes(user.accountId));
-              const availableTeams = teams.filter((team) => !team.members.includes(user.accountId));
-              const isExpanded = expandedUserId === user.accountId;
               return (
                 <div key={user.accountId} className="settings-user-card">
                   <div className="settings-user-avatar" style={{ background: avatarColor(user.accountId) }}>
                     {initials(user.displayName)}
                   </div>
-
                   <div className="settings-user-content">
                     <div className="settings-user-name">{user.displayName}</div>
                     <div className="settings-user-email">
                       {user.emailAddress ?? `${user.accountId}@jira.local`}
                     </div>
-
                     <div className="settings-user-team-row">
                       {userTeams.length === 0 ? (
                         <span className="settings-empty-note">No teams assigned</span>
                       ) : (
                         userTeams.map((team) => (
-                          <TeamTag
-                            key={team.id}
-                            name={team.name}
-                            color={team.color}
-                            onRemove={() => removeUserFromTeam(team.id, user.accountId)}
-                          />
+                          <TeamTag key={team.id} name={team.name} color={team.color} />
                         ))
                       )}
-
-                      {teams.length > 0 ? (
-                        <button
-                          type="button"
-                          className="add-to-team-button"
-                          onClick={() =>
-                            setExpandedUserId((current) =>
-                              current === user.accountId ? null : user.accountId
-                            )
-                          }
-                        >
-                          + Add to team
-                        </button>
-                      ) : null}
                     </div>
-
-                    {isExpanded ? (
-                      <div className="inline-team-picker">
-                        {availableTeams.length > 0 ? (
-                          availableTeams.map((team) => (
-                            <button
-                              key={team.id}
-                              type="button"
-                              className="inline-team-option"
-                              onClick={() => addUserToTeam(team.id, user.accountId)}
-                            >
-                              {team.name}
-                            </button>
-                          ))
-                        ) : (
-                          <span className="settings-user-email">No remaining teams</span>
-                        )}
-                        <button
-                          type="button"
-                          className="inline-cancel-button"
-                          onClick={() => setExpandedUserId(null)}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : null}
                   </div>
                 </div>
               );
@@ -423,26 +182,6 @@ export function SettingsShell({ users }: { users: JiraUserSummary[] }) {
           </div>
         </main>
       </div>
-
-      {createOpen ? (
-        <TeamModal
-          mode="create"
-          existing={teams}
-          onClose={() => setCreateOpen(false)}
-          onSubmit={upsertTeam}
-        />
-      ) : null}
-
-      {editingTeam ? (
-        <TeamModal
-          mode="edit"
-          team={editingTeam}
-          existing={teams}
-          onClose={() => setEditingTeam(null)}
-          onSubmit={upsertTeam}
-          onDelete={deleteTeam}
-        />
-      ) : null}
     </div>
   );
 }

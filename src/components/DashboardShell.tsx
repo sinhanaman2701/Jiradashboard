@@ -2,15 +2,16 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { DateFilterBar } from "@/components/DateFilterBar";
+import { SprintShell } from "@/components/SprintShell";
 import type { JiraDashboardData, JiraUserSummary } from "@/lib/jira/types";
 import {
   TEAM_COLOR_TOKENS,
   avatarColor,
-  initials,
-  readTeamsFromStorage,
-  writeTeamsToStorage
+  initials
 } from "@/lib/teams";
+import type { TeamRecord } from "@/lib/teams";
 
 const BAR_COLORS = [
   "#3b82f6",
@@ -26,9 +27,10 @@ const BAR_COLORS = [
 type Preset = "today" | "yesterday" | "last-week" | "last-month" | "custom";
 
 interface DashboardShellProps {
-  data: JiraDashboardData;
+  data: JiraDashboardData | null;
   preset: Preset;
   rangeLabel: string;
+  view: "dashboard" | "sprints";
 }
 
 function formatHours(value: number): string {
@@ -163,18 +165,17 @@ function SummaryStrip({ users }: { users: JiraUserSummary[] }) {
   );
 }
 
-export function DashboardShell({ data, preset, rangeLabel }: DashboardShellProps) {
-  const [teams, setTeams] = useState(readTeamsFromStorage());
+export function DashboardShell({ data, preset, rangeLabel, view }: DashboardShellProps) {
+  const router = useRouter();
+  const [teams, setTeams] = useState<TeamRecord[]>([]);
   const [selectedTeam, setSelectedTeam] = useState("");
   const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    setTeams(readTeamsFromStorage());
+    fetch("/api/teams")
+      .then((res) => res.json())
+      .then((data: TeamRecord[]) => setTeams(data));
   }, []);
-
-  useEffect(() => {
-    writeTeamsToStorage(teams);
-  }, [teams]);
 
   const userTeamsMap = useMemo(() => {
     const map = new Map<string, typeof teams>();
@@ -189,11 +190,12 @@ export function DashboardShell({ data, preset, rangeLabel }: DashboardShellProps
   }, [teams]);
 
   const visibleUsers = useMemo(() => {
-    if (!selectedTeam) return data.users;
-    return data.users.filter((user) =>
+    const users = data?.users ?? [];
+    if (!selectedTeam) return users;
+    return users.filter((user) =>
       teams.some((team) => team.id === selectedTeam && team.members.includes(user.accountId))
     );
-  }, [data.users, selectedTeam, teams]);
+  }, [data, selectedTeam, teams]);
 
   const belowTarget = visibleUsers.filter((user) => user.loggedHours < user.expectedHours).length;
 
@@ -210,11 +212,11 @@ export function DashboardShell({ data, preset, rangeLabel }: DashboardShellProps
             </svg>
           </div>
           <span className="app-name">Worklog</span>
-          <span className="mock-badge">{data.mode === "live" ? "LIVE" : "MOCK"}</span>
+          {data && <span className="mock-badge">{data.mode === "live" ? "LIVE" : "MOCK"}</span>}
         </div>
 
         <div className="topbar-right">
-          <span className="range-caption">{rangeLabel}</span>
+          {view === "dashboard" && <span className="range-caption">{rangeLabel}</span>}
           <span className="live-dot" />
           <Link className="settings-link" href="/settings">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -226,6 +228,38 @@ export function DashboardShell({ data, preset, rangeLabel }: DashboardShellProps
         </div>
       </header>
 
+      <div className="home-body">
+        <aside className="home-sidebar">
+          <div className="home-sidebar-label">Views</div>
+          <button
+            type="button"
+            className={`home-nav-item ${view === "dashboard" ? "active" : ""}`}
+            onClick={() => router.push("/")}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="3" width="7" height="7" rx="1" />
+              <rect x="3" y="14" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="7" height="7" rx="1" />
+            </svg>
+            Dashboard
+          </button>
+          <button
+            type="button"
+            className={`home-nav-item ${view === "sprints" ? "active" : ""}`}
+            onClick={() => router.push("/?view=sprints")}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+            </svg>
+            Sprints
+          </button>
+        </aside>
+
+        <div className="home-content">
+          {view === "sprints" ? (
+            <SprintShell />
+          ) : data ? (
       <main className="dashboard-main">
         <SummaryStrip users={visibleUsers} />
 
@@ -330,8 +364,10 @@ export function DashboardShell({ data, preset, rangeLabel }: DashboardShellProps
                       <div className="task-table">
                         <div className="task-table-head">
                           <span>Task</span>
-                          <span>Project</span>
+                          <span>Epic</span>
+                          <span>Space</span>
                           <span>Logged</span>
+                          <span>Total Logged</span>
                           <span>Avg/Day</span>
                         </div>
 
@@ -357,8 +393,16 @@ export function DashboardShell({ data, preset, rangeLabel }: DashboardShellProps
                                   <div className="task-key">{ticket.issueKey}</div>
                                 </div>
                               </div>
-                              <span className="task-project">{ticket.projectKey}</span>
+                              <span className="task-epic">
+                                {ticket.epicSummary ? (
+                                  <span className="epic-label">{ticket.epicSummary}</span>
+                                ) : (
+                                  <span className="epic-not-linked">Not linked</span>
+                                )}
+                              </span>
+                              <span className="task-space">{ticket.spaceName}</span>
                               <span className="task-logged">{formatHours(ticket.loggedHours)}</span>
+                              <span className="task-total-logged">{formatHours(ticket.totalLoggedHours)}</span>
                               <span className="task-avg">
                                 {formatHours(ticket.loggedHours / Math.max(user.workingDaysInRange, 1))}
                               </span>
@@ -374,6 +418,9 @@ export function DashboardShell({ data, preset, rangeLabel }: DashboardShellProps
           )}
         </div>
       </main>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

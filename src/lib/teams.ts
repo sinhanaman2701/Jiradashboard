@@ -10,6 +10,14 @@ export interface TeamRecord {
   members: string[];
 }
 
+const COLOR_CYCLE: TeamColor[] = ["blue", "purple", "green", "orange", "pink", "teal"];
+
+export function teamColorFromId(id: string): TeamColor {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return COLOR_CYCLE[hash % COLOR_CYCLE.length]!;
+}
+
 export const TEAM_COLOR_TOKENS: Record<
   TeamColor,
   { dot: string; bg: string; text: string }

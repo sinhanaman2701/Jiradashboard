@@ -17,6 +17,8 @@ export interface JiraIssue {
   statusName?: string;
   assigneeAccountId?: string;
   assigneeDisplayName?: string;
+  epicKey?: string;
+  epicSummary?: string;
 }
 
 export interface JiraWorklog {
@@ -35,8 +37,13 @@ export interface JiraUserTicketSummary {
   issueKey: string;
   issueSummary: string;
   projectKey: string;
+  spaceName: string;
+  epicKey?: string;
+  epicSummary?: string;
   loggedSeconds: number;
   loggedHours: number;
+  totalLoggedSeconds: number;
+  totalLoggedHours: number;
 }
 
 export interface JiraUserDaySummary {

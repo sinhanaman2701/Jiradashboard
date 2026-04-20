@@ -1,6 +1,20 @@
+import { unstable_cache } from "next/cache";
 import type { JiraIssue, JiraUser, JiraWorklog } from "@/lib/jira/types";
 
 const PAGE_SIZE = 50;
+
+async function runConcurrent<T>(fns: (() => Promise<T>)[], limit: number): Promise<T[]> {
+  const results: T[] = new Array(fns.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < fns.length) {
+      const i = cursor++;
+      results[i] = await fns[i]!();
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, fns.length) }, worker));
+  return results;
+}
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -100,6 +114,8 @@ export async function searchIssuesWithWorklogs(args: {
           project?: { key?: string; name?: string };
           status?: { name?: string };
           assignee?: { accountId?: string; displayName?: string };
+          parent?: { key?: string; fields?: { summary?: string; issuetype?: { name?: string } } };
+          customfield_10014?: string;
         };
       }>;
       isLast?: boolean;
@@ -108,13 +124,20 @@ export async function searchIssuesWithWorklogs(args: {
       method: "POST",
       body: JSON.stringify({
         jql,
-        fields: ["summary", "project", "status", "assignee"],
+        fields: ["summary", "project", "status", "assignee", "parent", "customfield_10014"],
         maxResults: PAGE_SIZE,
         ...(nextPageToken ? { nextPageToken } : {})
       })
     });
 
     for (const issue of page.issues ?? []) {
+      const parent = issue.fields?.parent;
+      const isEpicParent = parent?.fields?.issuetype?.name === "Epic";
+      const epicKey = isEpicParent
+        ? parent?.key
+        : (issue.fields?.customfield_10014 ?? undefined);
+      const epicSummary = isEpicParent ? (parent?.fields?.summary ?? undefined) : undefined;
+
       issues.push({
         id: issue.id,
         key: issue.key,
@@ -123,7 +146,9 @@ export async function searchIssuesWithWorklogs(args: {
         projectName: issue.fields?.project?.name,
         statusName: issue.fields?.status?.name,
         assigneeAccountId: issue.fields?.assignee?.accountId,
-        assigneeDisplayName: issue.fields?.assignee?.displayName
+        assigneeDisplayName: issue.fields?.assignee?.displayName,
+        epicKey,
+        epicSummary
       });
     }
 
@@ -173,3 +198,17 @@ export async function fetchIssueWorklogs(issue: JiraIssue): Promise<JiraWorklog[
 
   return result;
 }
+
+export async function fetchAllIssueWorklogs(issues: JiraIssue[]): Promise<JiraWorklog[]> {
+  const batches = await runConcurrent(
+    issues.map((issue) => () => fetchIssueWorklogs(issue)),
+    10
+  );
+  return batches.flat();
+}
+
+export const getCachedUsers = unstable_cache(
+  fetchAllUsers,
+  ["jira-users"],
+  { revalidate: 300 }
+);
