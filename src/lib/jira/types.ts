@@ -63,6 +63,7 @@ export interface JiraUserSummary {
   accountId: string;
   displayName: string;
   active: boolean;
+  emailAddress?: string;
   workingDaysInRange: number;
   expectedHours: number;
   loggedSeconds: number;

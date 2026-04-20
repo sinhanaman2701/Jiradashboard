@@ -2,110 +2,107 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { PRESET_STORAGE_KEY } from "@/lib/teams";
+
+type Preset = "today" | "yesterday" | "last-week" | "last-month" | "custom";
 
 interface DateFilterBarProps {
-  currentPreset: string;
-  from: string;
-  to: string;
+  preset: Preset;
+  customFrom: string;
+  customTo: string;
+  allowRestore?: boolean;
 }
 
 export function DateFilterBar({
-  currentPreset,
-  from,
-  to
+  preset,
+  customFrom,
+  customTo,
+  allowRestore = false
 }: DateFilterBarProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const [selectedPreset, setSelectedPreset] = useState(currentPreset);
-  const [customFrom, setCustomFrom] = useState(from);
-  const [customTo, setCustomTo] = useState(to);
+  const [selectedPreset, setSelectedPreset] = useState<Preset>(preset);
+  const [from, setFrom] = useState(customFrom);
+  const [to, setTo] = useState(customTo);
 
   useEffect(() => {
-    setSelectedPreset(currentPreset);
-    setCustomFrom(from);
-    setCustomTo(to);
-  }, [currentPreset, from, to]);
+    setSelectedPreset(preset);
+    setFrom(customFrom);
+    setTo(customTo);
+  }, [preset, customFrom, customTo]);
 
-  const isCustom = selectedPreset === "custom";
-  const isFiltered = currentPreset !== "";
+  useEffect(() => {
+    if (!allowRestore) return;
+    const saved = window.localStorage.getItem(PRESET_STORAGE_KEY) as Preset | null;
+    if (!saved || saved === "today" || saved === "custom") return;
+    router.replace(`${pathname}?preset=${encodeURIComponent(saved)}`);
+  }, [allowRestore, pathname, router]);
 
-  function applyPreset(value: string) {
-    if (value === "") {
+  function navigateWithPreset(value: Preset) {
+    window.localStorage.setItem(PRESET_STORAGE_KEY, value);
+    if (value === "today") {
       router.push(pathname);
       return;
     }
-
     if (value === "custom") {
-      setSelectedPreset(value);
       return;
     }
-
     router.push(`${pathname}?preset=${encodeURIComponent(value)}`);
   }
 
   function applyCustomRange() {
-    if (!customFrom || !customTo) return;
+    if (!from || !to) return;
+    window.localStorage.setItem(PRESET_STORAGE_KEY, "custom");
     router.push(
-      `${pathname}?preset=custom&from=${encodeURIComponent(customFrom)}&to=${encodeURIComponent(customTo)}`
+      `${pathname}?preset=custom&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
     );
   }
 
   return (
-    <div className="range-toolbar">
-      <div className="date-filter-group">
-        <label className="toolbar-label">
-          <span>Date</span>
-          <select
-            value={selectedPreset}
-            className="toolbar-select"
-            onChange={(event) => {
-              const value = event.target.value;
-              setSelectedPreset(value);
-              applyPreset(value);
-            }}
-          >
-            <option value="">Default</option>
-            <option value="yesterday">Yesterday</option>
-            <option value="last-week">Last Week</option>
-            <option value="last-month">Last Month</option>
-            <option value="custom">Custom Date</option>
-          </select>
-        </label>
-
-        {isFiltered ? (
-          <button
-            type="button"
-            className="reset-filter-button"
-            aria-label="Reset date filter"
-            onClick={() => router.push(pathname)}
-          >
-            ×
-          </button>
-        ) : null}
+    <div className="filter-group">
+      <div className="field-group">
+        <label className="field-label">Date</label>
+        <select
+          className="field-control"
+          value={selectedPreset}
+          onChange={(event) => {
+            const value = event.target.value as Preset;
+            setSelectedPreset(value);
+            navigateWithPreset(value);
+          }}
+        >
+          <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
+          <option value="last-week">Last Week</option>
+          <option value="last-month">Last Month</option>
+          <option value="custom">Custom</option>
+        </select>
       </div>
 
-      {isCustom ? (
-        <div className="custom-range-form">
-          <input
-            type="date"
-            value={customFrom}
-            aria-label="Custom from date"
-            onChange={(event) => setCustomFrom(event.target.value)}
-          />
-          <input
-            type="date"
-            value={customTo}
-            aria-label="Custom to date"
-            onChange={(event) => setCustomTo(event.target.value)}
-          />
-          <button
-            type="button"
-            className="button"
-            onClick={applyCustomRange}
-          >
+      {selectedPreset === "custom" ? (
+        <>
+          <div className="field-group">
+            <label className="field-label">From</label>
+            <input
+              className="field-control"
+              type="date"
+              value={from}
+              onChange={(event) => setFrom(event.target.value)}
+            />
+          </div>
+          <div className="field-group">
+            <label className="field-label">To</label>
+            <input
+              className="field-control"
+              type="date"
+              value={to}
+              onChange={(event) => setTo(event.target.value)}
+            />
+          </div>
+          <button className="apply-button" type="button" onClick={applyCustomRange}>
             Apply
           </button>
-        </div>
+        </>
       ) : null}
     </div>
   );

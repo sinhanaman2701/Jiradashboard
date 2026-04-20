@@ -286,6 +286,7 @@ function buildData(args: {
       accountId: user.accountId,
       displayName: user.displayName,
       active: user.active,
+      emailAddress: user.emailAddress,
       workingDaysInRange: workingDates.length,
       expectedHours: expectedHoursPerUser,
       loggedSeconds,

@@ -1,20 +1,7 @@
-import { getDashboardData } from "@/lib/jira/dashboard";
 import { DashboardShell } from "@/components/DashboardShell";
+import { getDashboardData } from "@/lib/jira/dashboard";
 
 const IST_TIME_ZONE = "Asia/Kolkata";
-
-function formatHours(value: number): string {
-  return `${value.toFixed(2)}h`;
-}
-
-function humanDate(value: string): string {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: IST_TIME_ZONE
-  }).format(new Date(value));
-}
 
 function formatYmd(date: Date): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -52,7 +39,7 @@ function getPresetRange(
   preset: string | undefined,
   customFrom?: string,
   customTo?: string
-): { from: string; to: string; label: string; preset: string } {
+): { from: string; to: string; label: string; preset: "today" | "yesterday" | "last-week" | "last-month" | "custom" } {
   const today = formatYmd(new Date());
 
   if (preset === "yesterday") {
@@ -88,12 +75,12 @@ function getPresetRange(
     return {
       from: customFrom,
       to: customTo,
-      label: "Custom Date",
+      label: `${customFrom} – ${customTo}`,
       preset
     };
   }
 
-  return { from: today, to: today, label: "Today", preset: "" };
+  return { from: today, to: today, label: "Today", preset: "today" };
 }
 
 export default async function Home({
@@ -111,37 +98,10 @@ export default async function Home({
   });
 
   return (
-    <main className="page-shell">
-      <div className="page-card">
-        <section className="section">
-          <p className="eyebrow">Jira MVP V1</p>
-          <h1 className="hero-title">Worklog visibility by user, day, and ticket</h1>
-          <p className="hero-copy">
-            This dashboard compares an 8-hour weekday expectation against Jira worklogs
-            and shows exactly which tickets contributed to each user&apos;s logged time.
-          </p>
-
-          <div className="hero-meta">
-            <div>
-              Mode: <strong>{data.mode === "live" ? "Live Jira" : "Mock fallback"}</strong>
-            </div>
-            <div>
-              Source: <strong>{data.baseUrl ?? "Local demo dataset"}</strong>
-            </div>
-            <div>
-              Range: <strong>{selectedRange.label}</strong>
-            </div>
-          </div>
-        </section>
-
-        <section className="section" style={{ borderBottom: 0 }}>
-          <DashboardShell
-            data={data}
-            currentPreset={selectedRange.preset}
-            rangeLabel={selectedRange.label}
-          />
-        </section>
-      </div>
-    </main>
+    <DashboardShell
+      data={data}
+      preset={selectedRange.preset}
+      rangeLabel={selectedRange.label}
+    />
   );
 }
