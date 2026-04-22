@@ -1,15 +1,29 @@
 import { NextResponse } from "next/server";
-import { getSession } from "@/lib/session";
-import { fetchUserProjects } from "@/lib/jira/timelog";
+import { getCurrentTokens, getCurrentUser, refreshCurrentTokens } from "@/lib/session";
+import { fetchUserProjects, type JiraProject } from "@/lib/jira/timelog";
+import { getCachedProjects, setCachedProjects } from "@/lib/timelog-cache";
 
 export async function GET() {
-  const session = await getSession();
-  if (!session.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let [tokens, user] = await Promise.all([getCurrentTokens(), getCurrentUser()]);
+  if (!tokens || !user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const cacheKey = `${tokens.cloudId}:${user.accountId}`;
+  const cached = getCachedProjects<JiraProject[]>(cacheKey);
+  if (cached) return NextResponse.json(cached);
 
   try {
-    const projects = await fetchUserProjects(session.user.accessToken);
-    return NextResponse.json(projects);
+    let projects;
+    try {
+      projects = await fetchUserProjects(tokens.accessToken, tokens.cloudId);
+    } catch (err) {
+      const refreshed = await refreshCurrentTokens();
+      if (!refreshed) throw err;
+      tokens = refreshed;
+      projects = await fetchUserProjects(tokens.accessToken, tokens.cloudId);
+    }
+    return NextResponse.json(setCachedProjects(cacheKey, projects));
   } catch (err) {
+    console.error("[timelog/projects] error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

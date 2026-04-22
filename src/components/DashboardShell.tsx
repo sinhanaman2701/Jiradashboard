@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { DateFilterBar } from "@/components/DateFilterBar";
+import { SettingsShell } from "@/components/SettingsShell";
 import { SprintShell } from "@/components/SprintShell";
-import type { JiraDashboardData, JiraUserSummary } from "@/lib/jira/types";
+import type { JiraDashboardData, JiraUser, JiraUserSummary } from "@/lib/jira/types";
+import { parseTimeToSeconds } from "@/lib/time-parser";
 import {
   TEAM_COLOR_TOKENS,
   avatarColor,
@@ -34,14 +36,65 @@ type Preset = "today" | "yesterday" | "last-week" | "last-month" | "custom";
 
 interface DashboardShellProps {
   data: JiraDashboardData | null;
+  manageTeamUsers: JiraUser[];
   preset: Preset;
   rangeLabel: string;
-  view: "dashboard" | "sprints";
+  refreshKey: string;
+  syncedAt: string;
+  view: "dashboard" | "sprints" | "manage-team";
   user?: SessionUser;
+}
+
+interface DashboardTeamGroup {
+  id: string;
+  name: string;
+  color?: TeamRecord["color"];
+  users: JiraUserSummary[];
+  expectedHours: number;
+  loggedHours: number;
+  varianceHours: number;
+  ticketCount: number;
+  belowTarget: number;
 }
 
 function formatHours(value: number): string {
   return `${value.toFixed(2)}h`;
+}
+
+function formatSyncTime(value: string): string {
+  return new Intl.DateTimeFormat("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Kolkata",
+  }).format(new Date(value));
+}
+
+function EtaCell({ eta }: { eta?: string }) {
+  return <span className={eta ? "task-eta" : "task-eta muted"}>{eta || "No ETA"}</span>;
+}
+
+function VarianceCell({ eta, totalLoggedSeconds }: { eta?: string; totalLoggedSeconds: number }) {
+  if (!eta) return <span className="task-variance muted">—</span>;
+
+  const etaSeconds = parseTimeToSeconds(eta);
+  if (!etaSeconds) return <span className="task-variance muted">—</span>;
+
+  const diffSeconds = totalLoggedSeconds - etaSeconds;
+  if (diffSeconds === 0) {
+    return (
+      <span className="task-variance on-target" title={`Total logged compared with ETA ${eta}`}>
+        on target
+      </span>
+    );
+  }
+
+  return (
+    <span className={`task-variance ${diffSeconds > 0 ? "over" : "under"}`} title={`Total logged compared with ETA ${eta}`}>
+      {diffSeconds > 0 ? "+" : "-"}
+      {formatHours(Math.abs(diffSeconds) / 3600)}
+    </span>
+  );
 }
 
 function metricColor(value: number): string {
@@ -69,6 +122,27 @@ function summaryFromUsers(users: JiraUserSummary[]) {
   const coverage = expected > 0 ? (logged / expected) * 100 : 0;
   const belowTarget = users.filter((user) => user.loggedHours < user.expectedHours).length;
   return { members, expected, logged, coverage, belowTarget };
+}
+
+function buildTeamGroup(
+  id: string,
+  name: string,
+  users: JiraUserSummary[],
+  color?: TeamRecord["color"]
+): DashboardTeamGroup {
+  const expectedHours = users.reduce((sum, user) => sum + user.expectedHours, 0);
+  const loggedHours = users.reduce((sum, user) => sum + user.loggedHours, 0);
+  return {
+    id,
+    name,
+    color,
+    users,
+    expectedHours,
+    loggedHours,
+    varianceHours: loggedHours - expectedHours,
+    ticketCount: users.reduce((sum, user) => sum + user.ticketCount, 0),
+    belowTarget: users.filter((user) => user.loggedHours < user.expectedHours).length
+  };
 }
 
 function TeamPill({
@@ -137,10 +211,11 @@ function HoursBar({ user }: { user: JiraUserSummary }) {
   );
 }
 
-function SummaryStrip({ users }: { users: JiraUserSummary[] }) {
+function SummaryStrip({ activeSprintCount, users }: { activeSprintCount: number | null; users: JiraUserSummary[] }) {
   const summary = summaryFromUsers(users);
   const cards = [
     { label: "Members", value: `${summary.members}` },
+    { label: "Active Sprints", value: activeSprintCount === null ? "—" : `${activeSprintCount}` },
     { label: "Expected", value: formatHours(summary.expected) },
     { label: "Logged", value: formatHours(summary.logged) },
     { label: "Coverage", value: `${summary.coverage.toFixed(0)}%` },
@@ -172,17 +247,30 @@ function SummaryStrip({ users }: { users: JiraUserSummary[] }) {
   );
 }
 
-export function DashboardShell({ data, preset, rangeLabel, view, user }: DashboardShellProps) {
+export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refreshKey, syncedAt, view, user }: DashboardShellProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [teams, setTeams] = useState<TeamRecord[]>([]);
   const [selectedTeam, setSelectedTeam] = useState("");
+  const [activeSprintCount, setActiveSprintCount] = useState<number | null>(null);
   const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
+  const [openTeams, setOpenTeams] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    fetch("/api/teams")
+    if (view !== "dashboard") return;
+    fetch(`/api/teams${refreshKey ? `?refresh=${encodeURIComponent(refreshKey)}` : ""}`)
       .then((res) => res.json())
       .then((data: TeamRecord[]) => setTeams(data));
-  }, []);
+  }, [refreshKey, view]);
+
+  useEffect(() => {
+    if (view !== "dashboard") return;
+    fetch(`/api/sprints/active-count${refreshKey ? `?refresh=${encodeURIComponent(refreshKey)}` : ""}`)
+      .then((res) => res.json())
+      .then((data: { count?: number }) => setActiveSprintCount(typeof data.count === "number" ? data.count : null))
+      .catch(() => setActiveSprintCount(null));
+  }, [refreshKey, view]);
 
   const userTeamsMap = useMemo(() => {
     const map = new Map<string, typeof teams>();
@@ -198,13 +286,164 @@ export function DashboardShell({ data, preset, rangeLabel, view, user }: Dashboa
 
   const visibleUsers = useMemo(() => {
     const users = data?.users ?? [];
-    if (!selectedTeam) return users;
-    return users.filter((user) =>
-      teams.some((team) => team.id === selectedTeam && team.members.includes(user.accountId))
-    );
-  }, [data, selectedTeam, teams]);
+    return users;
+  }, [data]);
+
+  const teamGroups = useMemo<DashboardTeamGroup[]>(() => {
+    const users = data?.users ?? [];
+    const assigned = new Set<string>();
+
+    const groups = teams
+      .map((team) => {
+        const members = users.filter((dashboardUser) => team.members.includes(dashboardUser.accountId));
+        members.forEach((member) => assigned.add(member.accountId));
+        return buildTeamGroup(team.id, team.name, members, team.color);
+      })
+      .filter((group) => group.users.length > 0);
+
+    const unassignedUsers = users.filter((dashboardUser) => !assigned.has(dashboardUser.accountId));
+    if (unassignedUsers.length > 0) {
+      groups.push(buildTeamGroup("unassigned", "Unassigned Team", unassignedUsers));
+    }
+
+    return groups;
+  }, [data, teams]);
+
+  const visibleTeamGroups = useMemo(() => {
+    if (!selectedTeam) return teamGroups;
+    return teamGroups.filter((teamGroup) => teamGroup.id === selectedTeam);
+  }, [selectedTeam, teamGroups]);
 
   const belowTarget = visibleUsers.filter((user) => user.loggedHours < user.expectedHours).length;
+
+  const renderUserCard = (dashboardUser: JiraUserSummary) => {
+    const userTeams = userTeamsMap.get(dashboardUser.accountId) ?? [];
+    const isOpen = Boolean(openRows[dashboardUser.accountId]);
+    const status = statusFor(dashboardUser);
+
+    return (
+      <div key={dashboardUser.accountId} className="member-card team-member-card">
+        <button
+          type="button"
+          className="member-summary"
+          onClick={() =>
+            setOpenRows((current) => ({
+              ...current,
+              [dashboardUser.accountId]: !current[dashboardUser.accountId]
+            }))
+          }
+        >
+          <div className="avatar-circle" style={{ background: avatarColor(dashboardUser.accountId) }}>
+            {initials(dashboardUser.displayName)}
+          </div>
+
+          <div className="member-identity">
+            <div className="member-name">{dashboardUser.displayName}</div>
+            <div className="member-teams">
+              {userTeams.length > 0 ? (
+                userTeams.map((team) => (
+                  <TeamPill key={team.id} name={team.name} color={team.color} />
+                ))
+              ) : (
+                <TeamPill name="No team" empty />
+              )}
+            </div>
+            <div className="member-subtitle">
+              {dashboardUser.ticketCount} tickets · {dashboardUser.workingDaysInRange} working days
+            </div>
+          </div>
+
+          <div className="metric-chip">
+            <span className="metric-chip-label">Expected</span>
+            <span className="metric-chip-value">{formatHours(dashboardUser.expectedHours)}</span>
+          </div>
+
+          <div className="metric-chip">
+            <span className="metric-chip-label">Logged</span>
+            <span className="metric-chip-value">{formatHours(dashboardUser.loggedHours)}</span>
+          </div>
+
+          <div className="metric-chip">
+            <span className="metric-chip-label">Variance</span>
+            <span className="metric-chip-value" style={{ color: metricColor(dashboardUser.varianceHours) }}>
+              {dashboardUser.varianceHours > 0 ? "+" : ""}
+              {formatHours(dashboardUser.varianceHours)}
+            </span>
+          </div>
+
+          <HoursBar user={dashboardUser} />
+          <StatusPill status={status} />
+          <span className={`chevron ${isOpen ? "open" : ""}`}>▾</span>
+        </button>
+
+        <div className={`member-expand ${isOpen ? "open" : ""}`}>
+          <div className="member-expand-inner">
+            <div className="task-table">
+              <div className="task-table-head">
+                <span>Task</span>
+                <span>Epic</span>
+                <span>Space</span>
+                <span>Logged</span>
+                <span>Total Logged</span>
+                <span>ETA</span>
+                <span>Variance</span>
+              </div>
+
+              {dashboardUser.ticketBreakdown.length === 0 ? (
+                <div className="task-empty">No logged tickets in this range.</div>
+              ) : (
+                dashboardUser.ticketBreakdown.map((ticket, index) => (
+                  <div key={ticket.issueKey} className="task-table-row">
+                    <div className="task-name-cell">
+                      <span
+                        className="task-dot"
+                        style={{ background: BAR_COLORS[index % BAR_COLORS.length] }}
+                      />
+                      <div>
+                        <a
+                          className="ticket-link"
+                          href={`${data?.baseUrl ?? "#"}${data?.baseUrl ? `/browse/${ticket.issueKey}` : ""}`}
+                          target={data?.baseUrl ? "_blank" : undefined}
+                          rel={data?.baseUrl ? "noreferrer" : undefined}
+                        >
+                          {ticket.issueSummary}
+                        </a>
+                        <div className="task-key">{ticket.issueKey}</div>
+                      </div>
+                    </div>
+                    <span className="task-epic">
+                      {ticket.epicSummary ? (
+                        <span className="epic-label">{ticket.epicSummary}</span>
+                      ) : (
+                        <span className="epic-not-linked">Not linked</span>
+                      )}
+                    </span>
+                    <span className="task-space">{ticket.spaceName}</span>
+                    <span className="task-logged">{formatHours(ticket.loggedHours)}</span>
+                    <span className="task-total-logged">{formatHours(ticket.totalLoggedHours)}</span>
+                    <EtaCell eta={ticket.eta} />
+                    <VarianceCell eta={ticket.eta} totalLoggedSeconds={ticket.totalLoggedSeconds} />
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  async function handleLogout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.push("/login");
+  }
+
+  function handleRefreshNow() {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("refresh", String(Date.now()));
+    router.push(`${pathname}?${params.toString()}`);
+    router.refresh();
+  }
 
   return (
     <div className="dashboard-screen">
@@ -237,13 +476,14 @@ export function DashboardShell({ data, preset, rangeLabel, view, user }: Dashboa
               <span className="topbar-user-name">{user.displayName}</span>
             </div>
           )}
-          <Link className="settings-link" href="/settings">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          <button type="button" className="settings-link" onClick={handleLogout}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
             </svg>
-            Settings
-          </Link>
+            Sign out
+          </button>
         </div>
       </header>
 
@@ -280,14 +520,29 @@ export function DashboardShell({ data, preset, rangeLabel, view, user }: Dashboa
             </svg>
             Time Logging
           </Link>
+          <button
+            type="button"
+            className={`home-nav-item ${view === "manage-team" ? "active" : ""}`}
+            onClick={() => router.push("/?view=manage-team")}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            </svg>
+            Manage Team
+          </button>
         </aside>
 
         <div className="home-content">
-          {view === "sprints" ? (
+          {view === "manage-team" ? (
+            <SettingsShell users={manageTeamUsers} />
+          ) : view === "sprints" ? (
             <SprintShell />
           ) : data ? (
       <main className="dashboard-main">
-        <SummaryStrip users={visibleUsers} />
+        <SummaryStrip activeSprintCount={activeSprintCount} users={visibleUsers} />
 
         <div className="toolbar-row">
           <div className="toolbar-left">
@@ -303,139 +558,93 @@ export function DashboardShell({ data, preset, rangeLabel, view, user }: Dashboa
                 value={selectedTeam}
                 onChange={(event) => setSelectedTeam(event.target.value)}
               >
-                <option value="">All Members</option>
-                {teams.map((team) => (
-                  <option key={team.id} value={team.id}>
-                    {team.name}
+                <option value="">All Teams</option>
+                {teamGroups.map((teamGroup) => (
+                  <option key={teamGroup.id} value={teamGroup.id}>
+                    {teamGroup.name}
                   </option>
                 ))}
               </select>
             </div>
           </div>
+          <div className="toolbar-sync">
+            <span>Last synced {formatSyncTime(syncedAt)}</span>
+            <button type="button" className="secondary-button" onClick={handleRefreshNow}>
+              Refresh now
+            </button>
+          </div>
         </div>
 
         <div className="section-row">
-          <div className="section-label">Members — {visibleUsers.length}</div>
+          <div className="section-label">Teams — {visibleTeamGroups.length}</div>
           <div className={`section-status ${belowTarget > 0 ? "danger" : "success"}`}>
             {belowTarget > 0 ? `${belowTarget} below target` : "All on track"}
           </div>
         </div>
 
-        <div className="member-list">
-          {visibleUsers.length === 0 ? (
-            <div className="empty-state">No members in this team.</div>
+        <div className="team-dashboard-list">
+          {visibleTeamGroups.length === 0 ? (
+            <div className="empty-state">No teams or members found.</div>
           ) : (
-            visibleUsers.map((user) => {
-              const userTeams = userTeamsMap.get(user.accountId) ?? [];
-              const isOpen = Boolean(openRows[user.accountId]);
-              const status = statusFor(user);
-
+            visibleTeamGroups.map((teamGroup) => {
+              const isTeamOpen = Boolean(openTeams[teamGroup.id]);
               return (
-                <div key={user.accountId} className="member-card">
+                <div key={teamGroup.id} className="team-dashboard-card">
                   <button
                     type="button"
-                    className="member-summary"
+                    className="team-dashboard-summary"
                     onClick={() =>
-                      setOpenRows((current) => ({
+                      setOpenTeams((current) => ({
                         ...current,
-                        [user.accountId]: !current[user.accountId]
+                        [teamGroup.id]: !current[teamGroup.id]
                       }))
                     }
                   >
-                    <div className="avatar-circle" style={{ background: avatarColor(user.accountId) }}>
-                      {initials(user.displayName)}
+                    <div
+                      className="team-dashboard-avatar"
+                      style={{
+                        background: teamGroup.color
+                          ? TEAM_COLOR_TOKENS[teamGroup.color].dot
+                          : "linear-gradient(135deg, #64748b, #94a3b8)"
+                      }}
+                    >
+                      {initials(teamGroup.name)}
                     </div>
 
-                    <div className="member-identity">
-                      <div className="member-name">{user.displayName}</div>
-                      <div className="member-teams">
-                        {userTeams.length > 0 ? (
-                          userTeams.map((team) => (
-                            <TeamPill key={team.id} name={team.name} color={team.color} />
-                          ))
-                        ) : (
-                          <TeamPill name="No team" empty />
-                        )}
-                      </div>
+                    <div className="team-dashboard-identity">
+                      <div className="member-name">{teamGroup.name}</div>
                       <div className="member-subtitle">
-                        {user.ticketCount} tickets · {user.workingDaysInRange} working days
+                        {teamGroup.users.length} members · {teamGroup.ticketCount} tickets
                       </div>
                     </div>
 
                     <div className="metric-chip">
                       <span className="metric-chip-label">Expected</span>
-                      <span className="metric-chip-value">{formatHours(user.expectedHours)}</span>
+                      <span className="metric-chip-value">{formatHours(teamGroup.expectedHours)}</span>
                     </div>
 
                     <div className="metric-chip">
                       <span className="metric-chip-label">Logged</span>
-                      <span className="metric-chip-value">{formatHours(user.loggedHours)}</span>
+                      <span className="metric-chip-value">{formatHours(teamGroup.loggedHours)}</span>
                     </div>
 
                     <div className="metric-chip">
                       <span className="metric-chip-label">Variance</span>
-                      <span className="metric-chip-value" style={{ color: metricColor(user.varianceHours) }}>
-                        {user.varianceHours > 0 ? "+" : ""}
-                        {formatHours(user.varianceHours)}
+                      <span className="metric-chip-value" style={{ color: metricColor(teamGroup.varianceHours) }}>
+                        {teamGroup.varianceHours > 0 ? "+" : ""}
+                        {formatHours(teamGroup.varianceHours)}
                       </span>
                     </div>
 
-                    <HoursBar user={user} />
-                    <StatusPill status={status} />
-                    <span className={`chevron ${isOpen ? "open" : ""}`}>▾</span>
+                    <div className={`section-status ${teamGroup.belowTarget > 0 ? "danger" : "success"}`}>
+                      {teamGroup.belowTarget > 0 ? `${teamGroup.belowTarget} below target` : "On track"}
+                    </div>
+                    <span className={`chevron ${isTeamOpen ? "open" : ""}`}>▾</span>
                   </button>
 
-                  <div className={`member-expand ${isOpen ? "open" : ""}`}>
-                    <div className="member-expand-inner">
-                      <div className="task-table">
-                        <div className="task-table-head">
-                          <span>Task</span>
-                          <span>Epic</span>
-                          <span>Space</span>
-                          <span>Logged</span>
-                          <span>Total Logged</span>
-                          <span>Avg/Day</span>
-                        </div>
-
-                        {user.ticketBreakdown.length === 0 ? (
-                          <div className="task-empty">No logged tickets in this range.</div>
-                        ) : (
-                          user.ticketBreakdown.map((ticket, index) => (
-                            <div key={ticket.issueKey} className="task-table-row">
-                              <div className="task-name-cell">
-                                <span
-                                  className="task-dot"
-                                  style={{ background: BAR_COLORS[index % BAR_COLORS.length] }}
-                                />
-                                <div>
-                                  <a
-                                    className="ticket-link"
-                                    href={`${data.baseUrl ?? "#"}${data.baseUrl ? `/browse/${ticket.issueKey}` : ""}`}
-                                    target={data.baseUrl ? "_blank" : undefined}
-                                    rel={data.baseUrl ? "noreferrer" : undefined}
-                                  >
-                                    {ticket.issueSummary}
-                                  </a>
-                                  <div className="task-key">{ticket.issueKey}</div>
-                                </div>
-                              </div>
-                              <span className="task-epic">
-                                {ticket.epicSummary ? (
-                                  <span className="epic-label">{ticket.epicSummary}</span>
-                                ) : (
-                                  <span className="epic-not-linked">Not linked</span>
-                                )}
-                              </span>
-                              <span className="task-space">{ticket.spaceName}</span>
-                              <span className="task-logged">{formatHours(ticket.loggedHours)}</span>
-                              <span className="task-total-logged">{formatHours(ticket.totalLoggedHours)}</span>
-                              <span className="task-avg">
-                                {formatHours(ticket.loggedHours / Math.max(user.workingDaysInRange, 1))}
-                              </span>
-                            </div>
-                          ))
-                        )}
-                      </div>
+                  <div className={`team-dashboard-expand ${isTeamOpen ? "open" : ""}`}>
+                    <div className="team-dashboard-members">
+                      {teamGroup.users.map(renderUserCard)}
                     </div>
                   </div>
                 </div>

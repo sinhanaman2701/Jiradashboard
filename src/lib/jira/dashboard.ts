@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { fetchAllIssueWorklogs, getCachedUsers, getJiraBaseUrl, isJiraConfigured, searchIssuesWithWorklogs } from "@/lib/jira/client";
 import { IST_TIME_ZONE, formatYmd, parseYmd } from "@/lib/date-utils";
 import { mockIssues, mockUsers, mockWorklogs } from "@/lib/jira/mock-data";
@@ -217,6 +218,8 @@ function buildData(args: {
       loggedHours: number;
       totalLoggedSeconds: number;
       totalLoggedHours: number;
+      latestLoggedAt: string;
+      eta?: string;
     }>();
 
     const userAllTimeTotals = allTimeTotals.get(user.accountId) ?? new Map<string, number>();
@@ -255,6 +258,9 @@ function buildData(args: {
       if (existing) {
         existing.loggedSeconds += worklog.timeSpentSeconds;
         existing.loggedHours = toHours(existing.loggedSeconds);
+        if (worklog.started > existing.latestLoggedAt) {
+          existing.latestLoggedAt = worklog.started;
+        }
       } else {
         const totalLoggedSeconds = userAllTimeTotals.get(worklog.issueKey) ?? worklog.timeSpentSeconds;
         ticketMap.set(worklog.issueKey, {
@@ -267,7 +273,9 @@ function buildData(args: {
           loggedSeconds: worklog.timeSpentSeconds,
           loggedHours: toHours(worklog.timeSpentSeconds),
           totalLoggedSeconds,
-          totalLoggedHours: toHours(totalLoggedSeconds)
+          totalLoggedHours: toHours(totalLoggedSeconds),
+          latestLoggedAt: worklog.started,
+          eta: issue?.eta
         });
       }
     }
@@ -306,7 +314,11 @@ function buildData(args: {
       status: statusFor(loggedHours, expectedHoursPerUser),
       dailyBreakdown,
       periodBreakdown,
-      ticketBreakdown: Array.from(ticketMap.values()).sort((a, b) => b.loggedSeconds - a.loggedSeconds)
+      ticketBreakdown: Array.from(ticketMap.values()).sort((a, b) => {
+        const latestCompare = b.latestLoggedAt.localeCompare(a.latestLoggedAt);
+        if (latestCompare !== 0) return latestCompare;
+        return a.issueKey.localeCompare(b.issueKey);
+      })
     };
   });
 
@@ -321,6 +333,7 @@ function buildData(args: {
   return {
     mode: args.mode,
     trackingView: args.trackingView,
+    syncedAt: new Date().toISOString(),
     baseUrl: args.baseUrl,
     from: args.from,
     to: args.to,
@@ -406,4 +419,19 @@ export async function getDashboardData(args: {
       userQuery: args.userQuery
     });
   }
+}
+
+const getCachedDashboardDataInternal = unstable_cache(
+  async (from: string, to: string, trackingView: JiraTrackingView) =>
+    getDashboardData({ from, to, trackingView }),
+  ["jira-dashboard-data"],
+  { revalidate: 120 }
+);
+
+export async function getCachedDashboardData(args: {
+  from: string;
+  to: string;
+  trackingView: JiraTrackingView;
+}): Promise<JiraDashboardData> {
+  return getCachedDashboardDataInternal(args.from, args.to, args.trackingView);
 }

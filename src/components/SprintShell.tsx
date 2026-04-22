@@ -3,9 +3,59 @@
 import { useEffect, useRef, useState } from "react";
 import type { Sprint, SprintBoard, SprintIssue, SprintProject, SprintResult } from "@/lib/jira/sprint-types";
 import { avatarColor, initials } from "@/lib/teams";
+import { parseTimeToSeconds } from "@/lib/time-parser";
 
 function formatHours(h: number): string {
   return `${h.toFixed(2)}h`;
+}
+
+const STATUS_PROGRESSION = [
+  "not started",
+  "development",
+  "product review",
+  "product review changes",
+  "code review",
+  "code review fixes",
+  "qa level i",
+  "qa fixes",
+  "qa level ii",
+  "ready for release",
+  "done",
+];
+
+function progressionIndex(name: string): number {
+  return STATUS_PROGRESSION.indexOf(name.toLowerCase());
+}
+
+function isGoalAchieved(statusName: string | undefined, sprintGoal: string): boolean {
+  if (!statusName || !sprintGoal) return false;
+  const statusIdx = progressionIndex(statusName);
+  const goalIdx = progressionIndex(sprintGoal);
+  if (statusIdx === -1 || goalIdx === -1) return false;
+  return statusIdx >= goalIdx;
+}
+
+function StatusPill({ status }: { status?: string }) {
+  if (!status) return <span className="sprint-status-pill sprint-status-empty">—</span>;
+  const lower = status.toLowerCase();
+  const variant =
+    lower === "done" || lower === "closed" || lower === "resolved" ? "done"
+    : lower.includes("progress") ? "inprogress"
+    : lower.includes("review") ? "review"
+    : "todo";
+  return <span className={`sprint-status-pill sprint-status-${variant}`}>{status}</span>;
+}
+
+function VarianceCell({ totalLoggedSeconds, eta }: { totalLoggedSeconds: number; eta: string }) {
+  if (!eta) return <span className="sprint-variance-na">—</span>;
+  const etaSeconds = parseTimeToSeconds(eta);
+  if (!etaSeconds) return <span className="sprint-variance-na">—</span>;
+  const diff = totalLoggedSeconds - etaSeconds;
+  if (diff === 0) return <span className="sprint-variance-zero">on target</span>;
+  const h = (Math.abs(diff) / 3600).toFixed(2);
+  return <span className={diff > 0 ? "sprint-variance-over" : "sprint-variance-under"}>
+    {diff > 0 ? `+${h}h` : `−${h}h`}
+  </span>;
 }
 
 function SprintStateBadge({ state }: { state: Sprint["state"] }) {
@@ -37,6 +87,46 @@ function UserTooltip({ breakdown }: { breakdown: SprintIssue["userBreakdown"] })
           <span>{formatHours(u.loggedHours)}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function sprintTotalHours(startDate?: string, endDate?: string): number | null {
+  if (!startDate || !endDate) return null;
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const days = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+  return days * 8;
+}
+
+function SprintOverview({ issues, startDate, endDate }: { issues: SprintIssue[]; startDate?: string; endDate?: string }) {
+  const goalsMet = issues.filter((i) => isGoalAchieved(i.statusName, i.sprintGoal)).length;
+  const goalsSet = issues.filter((i) => i.sprintGoal).length;
+  const totalLoggedSeconds = issues.reduce((sum, i) => sum + i.sprintLoggedSeconds, 0);
+  const totalLoggedHours = (totalLoggedSeconds / 3600).toFixed(1);
+  const unstarted = issues.filter((i) => i.sprintLoggedHours === 0).length;
+  const totalSprint = sprintTotalHours(startDate, endDate);
+
+  return (
+    <div className="sprint-overview">
+      <div className="sprint-overview-card">
+        <span className="sprint-overview-value">{goalsMet} / {goalsSet || issues.length}</span>
+        <span className="sprint-overview-label">Sprint Goals Met</span>
+      </div>
+      <div className="sprint-overview-card">
+        <span className="sprint-overview-value">{totalLoggedHours}h</span>
+        <span className="sprint-overview-label">Time Logged (Sprint)</span>
+      </div>
+      <div className={`sprint-overview-card ${unstarted > 0 ? "sprint-overview-card--warn" : ""}`}>
+        <span className="sprint-overview-value">{unstarted}</span>
+        <span className="sprint-overview-label">Unstarted Tasks</span>
+      </div>
+      {totalSprint !== null && (
+        <div className="sprint-overview-card">
+          <span className="sprint-overview-value">{totalSprint}h</span>
+          <span className="sprint-overview-label">Total Sprint Time</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -129,7 +219,7 @@ export function SprintShell() {
 
   useEffect(() => {
     fetch("/api/sprints/projects")
-      .then((r) => r.json())
+      .then((r) => readJsonArray<SprintProject>(r))
       .then((data: SprintProject[]) => {
         setProjects(data);
         setProjectsLoading(false);
@@ -137,18 +227,30 @@ export function SprintShell() {
       .catch(() => setProjectsLoading(false));
   }, []);
 
+  async function readJsonArray<T>(response: Response): Promise<T[]> {
+    if (!response.ok) return [];
+    const text = await response.text();
+    if (!text) return [];
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
   async function loadSprintsForProject(projectKey: string) {
     if (sprintsMap[projectKey] !== undefined) return;
     setSprintsLoading((prev) => ({ ...prev, [projectKey]: true }));
     try {
       const boards: SprintBoard[] = await fetch(
         `/api/sprints/boards?projectKey=${encodeURIComponent(projectKey)}`
-      ).then((r) => r.json());
+      ).then((r) => readJsonArray<SprintBoard>(r));
 
       const allSprintArrays: Sprint[][] = await Promise.all(
         boards.map((b) =>
           fetch(`/api/sprints/board/${b.id}/sprints`)
-            .then((r) => r.json())
+            .then((r) => readJsonArray<Sprint>(r))
             .then((sprints: Sprint[]) => sprints.map((s) => ({ ...s, boardId: b.id })))
         )
       );
@@ -224,7 +326,7 @@ export function SprintShell() {
         if (sprint.endDate) params.set("endDate", sprint.endDate.slice(0, 10));
         const issues: SprintIssue[] = await fetch(
           `/api/sprints/sprint/${sprint.id}/issues?${params.toString()}`
-        ).then((r) => r.json());
+        ).then((r) => readJsonArray<SprintIssue>(r));
 
         return {
           sprintId: sprint.id,
@@ -347,21 +449,31 @@ export function SprintShell() {
                 <span className="sprint-issue-count">{result.issues.length} issues</span>
               </div>
 
+              {result.issues.length > 0 && (
+                <SprintOverview issues={result.issues} startDate={result.startDate} endDate={result.endDate} />
+              )}
+
               {result.issues.length === 0 ? (
                 <div className="sprint-no-issues">No issues in this sprint.</div>
               ) : (
                 <div className="sprint-issue-table">
                   <div className="sprint-issue-head">
                     <span>Task</span>
+                    <span>Status</span>
                     <span>Assignee</span>
                     <span>Time Logged (Sprint)</span>
-                    <span>Total Logged</span>
+                    <span>Sprint Goal</span>
                   </div>
 
                   {result.issues.map((issue) => {
                     const cellKey = `${result.sprintId}-${issue.key}`;
+                    const noLogs = issue.sprintLoggedHours === 0;
+                    const rowClass = [
+                      "sprint-issue-row",
+                      noLogs ? "sprint-issue-row--no-logs" : "",
+                    ].filter(Boolean).join(" ");
                     return (
-                      <div key={issue.key} className="sprint-issue-row">
+                      <div key={issue.key} className={rowClass}>
                         <div className="sprint-issue-name-cell">
                           <a
                             href={`${process.env.NEXT_PUBLIC_JIRA_BASE_URL}/browse/${issue.key}`}
@@ -372,6 +484,10 @@ export function SprintShell() {
                             <div className="sprint-issue-summary">{issue.summary}</div>
                             <div className="sprint-issue-key">{issue.key}</div>
                           </a>
+                        </div>
+
+                        <div className="sprint-status-cell">
+                          <StatusPill status={issue.statusName} />
                         </div>
 
                         <div className="sprint-assignee-cell">
@@ -395,17 +511,23 @@ export function SprintShell() {
                           onMouseEnter={() => setHoveredCell(cellKey)}
                           onMouseLeave={() => setHoveredCell(null)}
                         >
-                          <span className="sprint-time-logged">
-                            {formatHours(issue.sprintLoggedHours)}
+                          <span className={`sprint-time-logged${noLogs ? " sprint-time-logged--empty" : ""}`}>
+                            {noLogs ? "No logs" : formatHours(issue.sprintLoggedHours)}
                           </span>
-                          {hoveredCell === cellKey && (
+                          {hoveredCell === cellKey && !noLogs && (
                             <UserTooltip breakdown={issue.userBreakdown} />
                           )}
                         </div>
 
-                        <span className="sprint-total-logged">
-                          {formatHours(issue.totalLoggedHours)}
+                        <span className="sprint-goal-cell">
+                          {issue.sprintGoal ? (
+                            <>
+                              <span className={`sprint-goal-dot sprint-goal-dot--${isGoalAchieved(issue.statusName, issue.sprintGoal) ? "achieved" : "pending"}`} />
+                              {issue.sprintGoal}
+                            </>
+                          ) : "—"}
                         </span>
+
                       </div>
                     );
                   })}

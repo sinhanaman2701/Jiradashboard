@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation";
-import { getSession } from "@/lib/session";
+import { getCurrentUser } from "@/lib/session";
 import { DashboardShell } from "@/components/DashboardShell";
-import { getDashboardData } from "@/lib/jira/dashboard";
+import { getCachedDashboardData, getDashboardData } from "@/lib/jira/dashboard";
+import { getCachedUsers, isJiraConfigured } from "@/lib/jira/client";
+import { mockUsers } from "@/lib/jira/mock-data";
 import { formatYmd, parseYmd, shiftDays, startOfWeekMonday, todayIST } from "@/lib/date-utils";
 
 function getPresetRange(
@@ -39,27 +41,45 @@ function getPresetRange(
 export default async function Home({
   searchParams
 }: {
-  searchParams?: Promise<{ preset?: string; from?: string; to?: string; view?: string }>;
+  searchParams?: Promise<{ preset?: string; from?: string; to?: string; view?: string; refresh?: string }>;
 }) {
-  const session = await getSession();
-  if (!session.user) redirect("/login");
-  if (session.user.role !== "admin") redirect("/time-logging");
+  const { cookies } = await import("next/headers");
+  const cookieStore = await cookies();
+  const sidCookie = cookieStore.get("jd-sid");
+  console.log("[page/] jd-sid cookie present:", !!sidCookie?.value, "value prefix:", sidCookie?.value?.slice(0, 8));
+
+  const user = await getCurrentUser();
+  console.log("[page/] user from session:", user?.displayName ?? "null");
+  if (!user) redirect("/login");
+  if (user.role !== "admin") redirect("/time-logging");
 
   const params = (await searchParams) ?? {};
-  const view = params.view === "sprints" ? "sprints" : "dashboard";
+  const view =
+    params.view === "sprints" ? "sprints" :
+    params.view === "manage-team" ? "manage-team" :
+    "dashboard";
   const selectedRange = getPresetRange(params.preset, params.from, params.to);
 
+  const bypassCache = Boolean(params.refresh);
   const data = view === "dashboard"
-    ? await getDashboardData({ from: selectedRange.from, to: selectedRange.to, trackingView: "daily" })
+    ? bypassCache
+      ? await getDashboardData({ from: selectedRange.from, to: selectedRange.to, trackingView: "daily" })
+      : await getCachedDashboardData({ from: selectedRange.from, to: selectedRange.to, trackingView: "daily" })
     : null;
+  const manageTeamUsers = view === "manage-team"
+    ? (isJiraConfigured() ? await getCachedUsers() : mockUsers)
+    : [];
 
   return (
     <DashboardShell
       data={data}
+      manageTeamUsers={manageTeamUsers}
       view={view}
       preset={selectedRange.preset}
       rangeLabel={selectedRange.label}
-      user={session.user}
+      refreshKey={params.refresh ?? ""}
+      syncedAt={data?.syncedAt ?? new Date().toISOString()}
+      user={user}
     />
   );
 }

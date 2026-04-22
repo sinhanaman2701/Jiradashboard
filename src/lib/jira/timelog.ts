@@ -11,6 +11,7 @@ export interface JiraIssueOption {
   summary: string;
   issueType: string;
   status: string;
+  latestLoggedAt?: string;
 }
 
 export interface WorklogEntry {
@@ -23,6 +24,39 @@ export interface WorklogEntry {
   comment: string;
 }
 
+const WORKLOG_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const WORKLOG_DATE_PREFIX_RE = /^(\d{4}-\d{2}-\d{2})/;
+
+function currentIstTimePart(): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const hour = parts.find((part) => part.type === "hour")?.value ?? "12";
+  const minute = parts.find((part) => part.type === "minute")?.value ?? "00";
+  const second = parts.find((part) => part.type === "second")?.value ?? "00";
+  return `${hour}:${minute}:${second}`;
+}
+
+function buildWorklogStarted(dateYmd: string): string {
+  if (!WORKLOG_DATE_RE.test(dateYmd)) {
+    throw new Error(`Invalid worklog date: ${dateYmd}`);
+  }
+
+  // Keep the selected IST date, but use the current IST clock time so Jira's relative timestamp
+  // reflects when the user logged it instead of a fixed synthetic hour.
+  return `${dateYmd}T${currentIstTimePart()}.000+0530`;
+}
+
+function getWorklogDate(started: string): string {
+  const match = WORKLOG_DATE_PREFIX_RE.exec(started);
+  return match?.[1] ?? started.slice(0, 10);
+}
+
 function jiraHeaders(accessToken: string) {
   return {
     Authorization: `Bearer ${accessToken}`,
@@ -31,36 +65,75 @@ function jiraHeaders(accessToken: string) {
   };
 }
 
-function baseUrl(): string {
-  return (process.env.JIRA_BASE_URL ?? "").replace(/\/$/, "");
+function baseUrl(cloudId: string): string {
+  return `https://api.atlassian.com/ex/jira/${cloudId}`;
 }
 
-export async function fetchUserProjects(accessToken: string): Promise<JiraProject[]> {
-  const res = await fetch(`${baseUrl()}/rest/api/3/project?maxResults=100&orderBy=name`, {
+async function wait(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(response: Response, attempt: number): number {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  }
+  return Math.min(250 * 2 ** attempt, 2000);
+}
+
+async function jiraFetchWithRetry(url: string, init: RequestInit, attempts = 3): Promise<Response> {
+  let lastResponse: Response | null = null;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const response = await fetch(url, init);
+    if (response.status !== 429 && response.status < 500) return response;
+    lastResponse = response;
+    if (attempt < attempts - 1) {
+      await wait(retryDelayMs(response, attempt));
+    }
+  }
+
+  return lastResponse!;
+}
+
+export async function fetchUserProjects(accessToken: string, cloudId: string): Promise<JiraProject[]> {
+  const url = `${baseUrl(cloudId)}/rest/api/3/project?maxResults=100&orderBy=name`;
+  console.log("[fetchUserProjects] calling:", url);
+  const res = await jiraFetchWithRetry(url, {
     headers: jiraHeaders(accessToken),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to fetch projects: ${res.status}`);
+  console.log("[fetchUserProjects] status:", res.status);
+  if (!res.ok) {
+    const body = await res.text();
+    console.error("[fetchUserProjects] error body:", body);
+    throw new Error(`Failed to fetch projects: ${res.status} ${body}`);
+  }
   const data = await res.json() as JiraProject[];
+  console.log("[fetchUserProjects] got", data.length, "projects");
   return data;
 }
 
 export async function searchIssues(
   accessToken: string,
+  cloudId: string,
+  accountId: string,
   projectKey: string,
   query: string
 ): Promise<JiraIssueOption[]> {
+  const assigneeClause = `assignee = "${accountId}"`;
   const jql = query.trim()
-    ? `project = "${projectKey}" AND (summary ~ "${query}" OR key = "${query}") ORDER BY updated DESC`
-    : `project = "${projectKey}" ORDER BY updated DESC`;
+    ? `project = "${projectKey}" AND ${assigneeClause} AND (summary ~ "${query}" OR key = "${query}") ORDER BY updated DESC`
+    : `project = "${projectKey}" AND ${assigneeClause} ORDER BY updated DESC`;
 
-  const res = await fetch(`${baseUrl()}/rest/api/3/search/jql`, {
+  const res = await jiraFetchWithRetry(`${baseUrl(cloudId)}/rest/api/3/search/jql`, {
     method: "POST",
     headers: jiraHeaders(accessToken),
     body: JSON.stringify({
       jql,
       fields: ["summary", "issuetype", "status"],
-      maxResults: 20,
+      maxResults: 50,
     }),
     cache: "no-store",
   });
@@ -78,24 +151,78 @@ export async function searchIssues(
     }>;
   };
 
-  return data.issues.map((issue) => ({
+  const options = data.issues.map((issue) => ({
     id: issue.id,
     key: issue.key,
     summary: issue.fields.summary,
     issueType: issue.fields.issuetype.name,
     status: issue.fields.status.name,
+    latestLoggedAt: undefined as string | undefined,
   }));
+
+  await Promise.all(
+    options.map(async (issue) => {
+      const wlRes = await jiraFetchWithRetry(
+        `${baseUrl(cloudId)}/rest/api/3/issue/${issue.key}/worklog?maxResults=100`,
+        { headers: jiraHeaders(accessToken), cache: "no-store" }
+      );
+      if (!wlRes.ok) return;
+
+      const wlData = await wlRes.json() as {
+        worklogs: Array<{
+          author?: { accountId?: string };
+          started?: string;
+        }>;
+      };
+
+      issue.latestLoggedAt = wlData.worklogs
+        .filter((worklog) => worklog.author?.accountId === accountId && worklog.started)
+        .map((worklog) => worklog.started!)
+        .sort((a, b) => b.localeCompare(a))[0];
+    })
+  );
+
+  return options.sort((a, b) => {
+    if (a.latestLoggedAt && b.latestLoggedAt) return b.latestLoggedAt.localeCompare(a.latestLoggedAt);
+    if (a.latestLoggedAt) return -1;
+    if (b.latestLoggedAt) return 1;
+    return a.summary.localeCompare(b.summary);
+  });
+}
+
+export async function assertIssueAssignedToUser(
+  accessToken: string,
+  cloudId: string,
+  issueKey: string,
+  accountId: string
+): Promise<void> {
+  const res = await jiraFetchWithRetry(`${baseUrl(cloudId)}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=assignee`, {
+    headers: jiraHeaders(accessToken),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to validate issue assignment: ${res.status}`);
+  }
+
+  const data = await res.json() as {
+    fields?: { assignee?: { accountId?: string } | null };
+  };
+  const assigneeAccountId = data.fields?.assignee?.accountId;
+  if (assigneeAccountId !== accountId) {
+    throw new Error("You can only log time on tasks assigned to you.");
+  }
 }
 
 export async function postWorklog(
   accessToken: string,
+  cloudId: string,
   issueKey: string,
   timeSpentSeconds: number,
   dateYmd: string,
   comment: string
 ): Promise<void> {
-  // Convert YYYY-MM-DD to IST 09:00 started timestamp
-  const started = `${dateYmd}T09:00:00.000+0530`;
+  const started = buildWorklogStarted(dateYmd);
 
   const body: Record<string, unknown> = {
     started,
@@ -115,7 +242,7 @@ export async function postWorklog(
     };
   }
 
-  const res = await fetch(`${baseUrl()}/rest/api/3/issue/${issueKey}/worklog`, {
+  const res = await jiraFetchWithRetry(`${baseUrl(cloudId)}/rest/api/3/issue/${issueKey}/worklog`, {
     method: "POST",
     headers: jiraHeaders(accessToken),
     body: JSON.stringify(body),
@@ -130,13 +257,13 @@ export async function postWorklog(
 
 export async function fetchUserWorklogs(
   accessToken: string,
+  cloudId: string,
   accountId: string,
   fromDate: string
 ): Promise<WorklogEntry[]> {
-  // Find issues this user has logged on
   const jql = `worklogAuthor = "${accountId}" AND worklogDate >= "${fromDate}" ORDER BY updated DESC`;
 
-  const searchRes = await fetch(`${baseUrl()}/rest/api/3/search/jql`, {
+  const searchRes = await jiraFetchWithRetry(`${baseUrl(cloudId)}/rest/api/3/search/jql`, {
     method: "POST",
     headers: jiraHeaders(accessToken),
     body: JSON.stringify({ jql, fields: ["summary", "project"], maxResults: 100 }),
@@ -155,8 +282,8 @@ export async function fetchUserWorklogs(
 
   await Promise.all(
     searchData.issues.map(async (issue) => {
-      const wlRes = await fetch(
-        `${baseUrl()}/rest/api/3/issue/${issue.key}/worklog?maxResults=100`,
+      const wlRes = await jiraFetchWithRetry(
+        `${baseUrl(cloudId)}/rest/api/3/issue/${issue.key}/worklog?maxResults=100`,
         { headers: jiraHeaders(accessToken), cache: "no-store" }
       );
       if (!wlRes.ok) return;
@@ -173,7 +300,7 @@ export async function fetchUserWorklogs(
 
       for (const wl of wlData.worklogs) {
         if (wl.author.accountId !== accountId) continue;
-        if (wl.started < fromDate) continue;
+        if (getWorklogDate(wl.started) < fromDate) continue;
 
         let comment = "";
         const para = wl.comment?.content?.[0]?.content?.[0]?.text;
@@ -192,6 +319,6 @@ export async function fetchUserWorklogs(
     })
   );
 
-  entries.sort((a, b) => a.started.localeCompare(b.started));
+  entries.sort((a, b) => b.started.localeCompare(a.started));
   return entries;
 }

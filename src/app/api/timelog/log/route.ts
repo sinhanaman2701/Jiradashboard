@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession } from "@/lib/session";
-import { postWorklog } from "@/lib/jira/timelog";
+import { getCurrentTokens, getCurrentUser, refreshCurrentTokens } from "@/lib/session";
+import { assertIssueAssignedToUser, postWorklog } from "@/lib/jira/timelog";
+import { clearIssueSearchCacheForUser } from "@/lib/timelog-cache";
 
 export async function POST(req: NextRequest) {
-  const session = await getSession();
-  if (!session.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const user = await getCurrentUser();
+  let tokens = await getCurrentTokens();
+  if (!tokens || !user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json() as {
     issueKey?: string;
@@ -20,7 +22,17 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await postWorklog(session.user.accessToken, issueKey, timeSpentSeconds, date, comment);
+    try {
+      await assertIssueAssignedToUser(tokens.accessToken, tokens.cloudId, issueKey, user.accountId);
+      await postWorklog(tokens.accessToken, tokens.cloudId, issueKey, timeSpentSeconds, date, comment);
+    } catch (err) {
+      const refreshed = await refreshCurrentTokens();
+      if (!refreshed) throw err;
+      tokens = refreshed;
+      await assertIssueAssignedToUser(tokens.accessToken, tokens.cloudId, issueKey, user.accountId);
+      await postWorklog(tokens.accessToken, tokens.cloudId, issueKey, timeSpentSeconds, date, comment);
+    }
+    clearIssueSearchCacheForUser(user.accountId);
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

@@ -19,6 +19,7 @@ export interface JiraIssue {
   assigneeDisplayName?: string;
   epicKey?: string;
   epicSummary?: string;
+  eta?: string;
 }
 
 export interface JiraWorklog {
@@ -44,6 +45,8 @@ export interface JiraUserTicketSummary {
   loggedHours: number;
   totalLoggedSeconds: number;
   totalLoggedHours: number;
+  latestLoggedAt: string;
+  eta?: string;
 }
 
 export interface JiraUserDaySummary {
@@ -86,6 +89,7 @@ export interface JiraUserSummary {
 export interface JiraDashboardData {
   mode: JiraRuntimeMode;
   trackingView: JiraTrackingView;
+  syncedAt: string;
   baseUrl?: string;
   from: string;
   to: string;

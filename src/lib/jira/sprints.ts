@@ -99,6 +99,37 @@ export async function fetchBoardsForProject(projectKey: string): Promise<SprintB
   return boards;
 }
 
+async function fetchAllBoards(): Promise<SprintBoard[]> {
+  const boards: SprintBoard[] = [];
+  let startAt = 0;
+
+  while (true) {
+    const page = await jiraFetch<{
+      values?: Array<{
+        id?: number;
+        name?: string;
+        location?: { projectKey?: string; projectName?: string };
+      }>;
+      isLast?: boolean;
+    }>(`/rest/agile/1.0/board?startAt=${startAt}&maxResults=${PAGE_SIZE}`);
+
+    for (const b of page.values ?? []) {
+      if (!b.id || !b.name) continue;
+      boards.push({
+        id: b.id,
+        name: b.name,
+        projectKey: b.location?.projectKey ?? "UNKNOWN",
+        projectName: b.location?.projectName ?? b.location?.projectKey ?? "Unknown"
+      });
+    }
+
+    if (page.isLast || (page.values ?? []).length < PAGE_SIZE) break;
+    startAt += PAGE_SIZE;
+  }
+
+  return boards;
+}
+
 export async function fetchSprintsForBoard(boardId: number): Promise<Sprint[]> {
   const sprints: Sprint[] = [];
   let startAt = 0;
@@ -136,6 +167,67 @@ export async function fetchSprintsForBoard(boardId: number): Promise<Sprint[]> {
     const order = { active: 0, future: 1, closed: 2 };
     return (order[a.state] ?? 3) - (order[b.state] ?? 3);
   });
+}
+
+export async function fetchActiveSprintCount(): Promise<number> {
+  const boards = await fetchAllBoards();
+  const sprintGroups = await runConcurrent(
+    boards.map((board) => async () => {
+      try {
+        return await fetchActiveSprintsForBoard(board.id);
+      } catch (error) {
+        console.warn(`[sprints/active-count] skipping board ${board.id}:`, error);
+        return [];
+      }
+    }),
+    4
+  );
+  const activeSprintIds = new Set<number>();
+
+  for (const sprints of sprintGroups) {
+    for (const sprint of sprints) {
+      if (sprint.state === "active") {
+        activeSprintIds.add(sprint.id);
+      }
+    }
+  }
+
+  return activeSprintIds.size;
+}
+
+async function fetchActiveSprintsForBoard(boardId: number): Promise<Sprint[]> {
+  const sprints: Sprint[] = [];
+  let startAt = 0;
+
+  while (true) {
+    const page = await jiraFetch<{
+      values?: Array<{
+        id?: number;
+        name?: string;
+        state?: string;
+        startDate?: string;
+        endDate?: string;
+      }>;
+      isLast?: boolean;
+    }>(`/rest/agile/1.0/board/${boardId}/sprint?state=active&startAt=${startAt}&maxResults=${PAGE_SIZE}`);
+
+    for (const s of page.values ?? []) {
+      if (!s.id || !s.name) continue;
+      sprints.push({
+        id: s.id,
+        name: s.name,
+        state: "active",
+        startDate: s.startDate,
+        endDate: s.endDate,
+        boardId
+      });
+    }
+
+    if (page.isLast || (page.values ?? []).length < PAGE_SIZE) break;
+    startAt += PAGE_SIZE;
+  }
+
+  return sprints;
 }
 
 interface RawWorklog {
@@ -192,6 +284,9 @@ export async function fetchSprintIssues(
   startDate?: string,
   endDate?: string
 ): Promise<SprintIssue[]> {
+  const etaFieldId = process.env.JIRA_ETA_FIELD_ID ?? "customfield_10071";
+  const sprintGoalFieldId = process.env.JIRA_SPRINT_GOAL_FIELD_ID ?? "customfield_10104";
+
   const issues: Array<{
     id: string;
     key: string;
@@ -199,6 +294,8 @@ export async function fetchSprintIssues(
     assigneeAccountId?: string;
     assigneeDisplayName?: string;
     statusName?: string;
+    eta: string;
+    sprintGoal: string;
   }> = [];
 
   let startAt = 0;
@@ -211,13 +308,14 @@ export async function fetchSprintIssues(
           summary?: string;
           assignee?: { accountId?: string; displayName?: string };
           status?: { name?: string };
+          [key: string]: unknown;
         };
       }>;
       total?: number;
       startAt?: number;
       maxResults?: number;
     }>(
-      `/rest/agile/1.0/sprint/${sprintId}/issue?fields=summary,assignee,status&startAt=${startAt}&maxResults=${PAGE_SIZE}`
+      `/rest/agile/1.0/sprint/${sprintId}/issue?fields=summary,assignee,status,${etaFieldId},${sprintGoalFieldId}&startAt=${startAt}&maxResults=${PAGE_SIZE}`
     );
 
     for (const issue of page.issues ?? []) {
@@ -227,7 +325,9 @@ export async function fetchSprintIssues(
         summary: issue.fields?.summary ?? issue.key,
         assigneeAccountId: issue.fields?.assignee?.accountId,
         assigneeDisplayName: issue.fields?.assignee?.displayName,
-        statusName: issue.fields?.status?.name
+        statusName: issue.fields?.status?.name,
+        eta: (issue.fields?.[etaFieldId] as string | null) ?? "",
+        sprintGoal: ((issue.fields?.[sprintGoalFieldId] as { value?: string } | null)?.value) ?? "",
       });
     }
 
@@ -265,6 +365,8 @@ export async function fetchSprintIssues(
       assigneeAccountId: issue.assigneeAccountId,
       assigneeDisplayName: issue.assigneeDisplayName,
       statusName: issue.statusName,
+      eta: issue.eta,
+      sprintGoal: issue.sprintGoal,
       sprintLoggedSeconds,
       sprintLoggedHours: toHours(sprintLoggedSeconds),
       totalLoggedSeconds,

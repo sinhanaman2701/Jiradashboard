@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { JiraUser } from "@/lib/jira/types";
 import {
@@ -71,41 +70,6 @@ export function SettingsShell({ users }: { users: JiraUser[] }) {
     : "https://admin.atlassian.com";
 
   return (
-    <div className="settings-screen">
-      <header className="topbar">
-        <div className="topbar-brand">
-          <Link href="/" className="worklog-breadcrumb">
-            <div className="logo-mark" aria-hidden="true">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <rect x="1" y="1" width="5" height="5" rx="1.2" fill="white" opacity="0.9" />
-                <rect x="8" y="1" width="5" height="5" rx="1.2" fill="white" opacity="0.6" />
-                <rect x="1" y="8" width="5" height="5" rx="1.2" fill="white" opacity="0.6" />
-                <rect x="8" y="8" width="5" height="5" rx="1.2" fill="white" opacity="0.3" />
-              </svg>
-            </div>
-            <span className="app-name app-name-muted">Worklog</span>
-          </Link>
-          <span className="breadcrumb-separator">/</span>
-          <span className="settings-page-label">Settings</span>
-        </div>
-
-        <Link href="/" className="settings-back-link">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-            <path d="M19 12H5M5 12l7-7M5 12l7 7" />
-          </svg>
-          Dashboard
-        </Link>
-      </header>
-
-      <div className="settings-layout">
-        <aside className="settings-sidebar">
-          <div className="settings-sidebar-label">Settings</div>
-          <button type="button" className="settings-nav-item active">
-            <span className="settings-nav-icon"><UsersIcon /></span>
-            <span>Manage Team</span>
-          </button>
-        </aside>
-
         <main className="settings-main">
           <div className="settings-main-header">
             <div>
@@ -181,7 +145,5 @@ export function SettingsShell({ users }: { users: JiraUser[] }) {
             })}
           </div>
         </main>
-      </div>
-    </div>
   );
 }

@@ -16,7 +16,8 @@ export const mockIssues: JiraIssue[] = [
     projectName: "Engineering",
     statusName: "In Progress",
     epicKey: "ENG-50",
-    epicSummary: "Dashboard Q2 Initiative"
+    epicSummary: "Dashboard Q2 Initiative",
+    eta: "12h"
   },
   {
     id: "10002",
@@ -26,7 +27,8 @@ export const mockIssues: JiraIssue[] = [
     projectName: "Engineering",
     statusName: "In Review",
     epicKey: "ENG-50",
-    epicSummary: "Dashboard Q2 Initiative"
+    epicSummary: "Dashboard Q2 Initiative",
+    eta: "8h"
   },
   {
     id: "10003",
@@ -34,7 +36,8 @@ export const mockIssues: JiraIssue[] = [
     summary: "Investigate missing worklogs in leadership view",
     projectKey: "OPS",
     projectName: "Operations",
-    statusName: "Done"
+    statusName: "Done",
+    eta: "10h"
   }
 ];
 

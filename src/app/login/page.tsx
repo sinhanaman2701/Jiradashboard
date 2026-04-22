@@ -1,15 +1,13 @@
 import { redirect } from "next/navigation";
-import { getSession } from "@/lib/session";
+import { getCurrentUser } from "@/lib/session";
 
 export default async function LoginPage({
   searchParams,
 }: {
   searchParams?: Promise<{ error?: string }>;
 }) {
-  const session = await getSession();
-  if (session.user) {
-    redirect(session.user.role === "admin" ? "/" : "/time-logging");
-  }
+  const user = await getCurrentUser();
+  if (user) redirect(user.role === "admin" ? "/" : "/time-logging");
 
   const params = (await searchParams) ?? {};
   const errorMessages: Record<string, string> = {
