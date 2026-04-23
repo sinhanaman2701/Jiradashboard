@@ -11,21 +11,19 @@ export async function GET(req: NextRequest) {
   const project = searchParams.get("project") ?? "";
   const q = searchParams.get("q") ?? "";
 
-  if (!project) return NextResponse.json([]);
-
-  const cacheKey = `${user.accountId}:${tokens.cloudId}:${project}:${q.trim().toLowerCase()}`;
+  const cacheKey = `${user.accountId}:${tokens.cloudId}:${project || "all"}:${q.trim().toLowerCase()}`;
   const cached = getCachedIssueSearch<JiraIssueOption[]>(cacheKey);
   if (cached) return NextResponse.json(cached);
 
   try {
     let issues;
     try {
-      issues = await searchIssues(tokens.accessToken, tokens.cloudId, user.accountId, project, q);
+      issues = await searchIssues(tokens.accessToken, tokens.cloudId, user.accountId, project || null, q);
     } catch (err) {
       const refreshed = await refreshCurrentTokens();
       if (!refreshed) throw err;
       tokens = refreshed;
-      issues = await searchIssues(tokens.accessToken, tokens.cloudId, user.accountId, project, q);
+      issues = await searchIssues(tokens.accessToken, tokens.cloudId, user.accountId, project || null, q);
     }
     return NextResponse.json(setCachedIssueSearch(cacheKey, issues));
   } catch (err) {

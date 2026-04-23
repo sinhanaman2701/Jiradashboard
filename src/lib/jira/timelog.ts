@@ -1,3 +1,5 @@
+import { parseTimeToSeconds } from "@/lib/time-parser";
+
 export interface JiraProject {
   id: string;
   key: string;
@@ -9,8 +11,12 @@ export interface JiraIssueOption {
   id: string;
   key: string;
   summary: string;
+  projectKey: string;
+  projectName: string;
   issueType: string;
   status: string;
+  originalEstimateSeconds: number;
+  totalLoggedSeconds: number;
   latestLoggedAt?: string;
 }
 
@@ -47,7 +53,7 @@ function buildWorklogStarted(dateYmd: string): string {
     throw new Error(`Invalid worklog date: ${dateYmd}`);
   }
 
-  // Keep the selected IST date, but use the current IST clock time so Jira's relative timestamp
+  // Keep the provided IST date and use the current IST clock time so Jira's relative timestamp
   // reflects when the user logged it instead of a fixed synthetic hour.
   return `${dateYmd}T${currentIstTimePart()}.000+0530`;
 }
@@ -99,41 +105,38 @@ async function jiraFetchWithRetry(url: string, init: RequestInit, attempts = 3):
 
 export async function fetchUserProjects(accessToken: string, cloudId: string): Promise<JiraProject[]> {
   const url = `${baseUrl(cloudId)}/rest/api/3/project?maxResults=100&orderBy=name`;
-  console.log("[fetchUserProjects] calling:", url);
   const res = await jiraFetchWithRetry(url, {
     headers: jiraHeaders(accessToken),
     cache: "no-store",
   });
-  console.log("[fetchUserProjects] status:", res.status);
   if (!res.ok) {
     const body = await res.text();
-    console.error("[fetchUserProjects] error body:", body);
     throw new Error(`Failed to fetch projects: ${res.status} ${body}`);
   }
-  const data = await res.json() as JiraProject[];
-  console.log("[fetchUserProjects] got", data.length, "projects");
-  return data;
+  return await res.json() as JiraProject[];
 }
 
 export async function searchIssues(
   accessToken: string,
   cloudId: string,
   accountId: string,
-  projectKey: string,
+  projectKey: string | null,
   query: string
 ): Promise<JiraIssueOption[]> {
+  const etaFieldId = process.env.JIRA_ETA_FIELD_ID ?? "customfield_10071";
   const assigneeClause = `assignee = "${accountId}"`;
+  const projectClause = projectKey ? `project = "${projectKey}" AND ` : "";
   const jql = query.trim()
-    ? `project = "${projectKey}" AND ${assigneeClause} AND (summary ~ "${query}" OR key = "${query}") ORDER BY updated DESC`
-    : `project = "${projectKey}" AND ${assigneeClause} ORDER BY updated DESC`;
+    ? `${projectClause}${assigneeClause} AND (summary ~ "${query}" OR key = "${query}") ORDER BY updated DESC`
+    : `${projectClause}${assigneeClause} ORDER BY updated DESC`;
 
   const res = await jiraFetchWithRetry(`${baseUrl(cloudId)}/rest/api/3/search/jql`, {
     method: "POST",
     headers: jiraHeaders(accessToken),
     body: JSON.stringify({
       jql,
-      fields: ["summary", "issuetype", "status"],
-      maxResults: 50,
+      fields: ["summary", "project", "issuetype", "status", etaFieldId],
+      maxResults: 100,
     }),
     cache: "no-store",
   });
@@ -145,8 +148,10 @@ export async function searchIssues(
       key: string;
       fields: {
         summary: string;
+        project: { key: string; name: string };
         issuetype: { name: string };
         status: { name: string };
+        [etaFieldId]?: string | null;
       };
     }>;
   };
@@ -155,8 +160,12 @@ export async function searchIssues(
     id: issue.id,
     key: issue.key,
     summary: issue.fields.summary,
+    projectKey: issue.fields.project.key,
+    projectName: issue.fields.project.name,
     issueType: issue.fields.issuetype.name,
     status: issue.fields.status.name,
+    originalEstimateSeconds: parseTimeToSeconds((issue.fields[etaFieldId] as string | null | undefined) ?? "") ?? 0,
+    totalLoggedSeconds: 0,
     latestLoggedAt: undefined as string | undefined,
   }));
 
@@ -172,11 +181,14 @@ export async function searchIssues(
         worklogs: Array<{
           author?: { accountId?: string };
           started?: string;
+          timeSpentSeconds?: number;
         }>;
       };
 
-      issue.latestLoggedAt = wlData.worklogs
-        .filter((worklog) => worklog.author?.accountId === accountId && worklog.started)
+      const userWorklogs = wlData.worklogs.filter((worklog) => worklog.author?.accountId === accountId);
+      issue.totalLoggedSeconds = userWorklogs.reduce((sum, worklog) => sum + (worklog.timeSpentSeconds ?? 0), 0);
+      issue.latestLoggedAt = userWorklogs
+        .filter((worklog) => worklog.started)
         .map((worklog) => worklog.started!)
         .sort((a, b) => b.localeCompare(a))[0];
     })

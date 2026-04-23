@@ -20,6 +20,7 @@ export interface JiraIssue {
   epicKey?: string;
   epicSummary?: string;
   eta?: string;
+  productClient?: string;
 }
 
 export interface JiraWorklog {

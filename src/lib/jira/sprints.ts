@@ -3,6 +3,33 @@ import type { Sprint, SprintBoard, SprintIssue, SprintProject } from "@/lib/jira
 
 const PAGE_SIZE = 50;
 
+const STATUS_PROGRESSION = [
+  "not started", "development", "product review", "product review changes",
+  "code review", "code review fixes", "qa level i", "qa fixes",
+  "qa level ii", "ready for release", "done",
+];
+
+function isGoalAchieved(statusName: string | undefined, sprintGoal: string): boolean {
+  if (!statusName || !sprintGoal) return false;
+  const statusIdx = STATUS_PROGRESSION.indexOf(statusName.toLowerCase());
+  const goalIdx = STATUS_PROGRESSION.indexOf(sprintGoal.toLowerCase());
+  if (statusIdx === -1 || goalIdx === -1) return false;
+  return statusIdx >= goalIdx;
+}
+
+export interface SprintGoalProjectSummary {
+  projectKey: string;
+  projectName: string;
+  achieved: number;
+  total: number;
+}
+
+export interface SprintGoalsSummary {
+  achieved: number;
+  total: number;
+  byProject: SprintGoalProjectSummary[];
+}
+
 function getBaseUrl(): string {
   return (process.env.JIRA_BASE_URL ?? "").replace(/\/$/, "");
 }
@@ -291,6 +318,9 @@ export async function fetchSprintIssues(
     id: string;
     key: string;
     summary: string;
+    issueTypeName?: string;
+    parentKey?: string;
+    parentSummary?: string;
     assigneeAccountId?: string;
     assigneeDisplayName?: string;
     statusName?: string;
@@ -306,6 +336,8 @@ export async function fetchSprintIssues(
         key: string;
         fields?: {
           summary?: string;
+          issuetype?: { name?: string };
+          parent?: { key?: string; fields?: { summary?: string } };
           assignee?: { accountId?: string; displayName?: string };
           status?: { name?: string };
           [key: string]: unknown;
@@ -315,7 +347,7 @@ export async function fetchSprintIssues(
       startAt?: number;
       maxResults?: number;
     }>(
-      `/rest/agile/1.0/sprint/${sprintId}/issue?fields=summary,assignee,status,${etaFieldId},${sprintGoalFieldId}&startAt=${startAt}&maxResults=${PAGE_SIZE}`
+      `/rest/agile/1.0/sprint/${sprintId}/issue?fields=summary,issuetype,parent,assignee,status,${etaFieldId},${sprintGoalFieldId}&startAt=${startAt}&maxResults=${PAGE_SIZE}`
     );
 
     for (const issue of page.issues ?? []) {
@@ -323,6 +355,9 @@ export async function fetchSprintIssues(
         id: issue.id,
         key: issue.key,
         summary: issue.fields?.summary ?? issue.key,
+        issueTypeName: issue.fields?.issuetype?.name,
+        parentKey: issue.fields?.parent?.key,
+        parentSummary: issue.fields?.parent?.fields?.summary,
         assigneeAccountId: issue.fields?.assignee?.accountId,
         assigneeDisplayName: issue.fields?.assignee?.displayName,
         statusName: issue.fields?.status?.name,
@@ -344,6 +379,9 @@ export async function fetchSprintIssues(
   return issues.map((issue, idx) => {
     const all = worklogs[idx] ?? [];
     const inSprint = all.filter((w) => isInWindow(w.started, startDate, endDate));
+    const beforeSprint = startDate
+      ? all.filter((w) => w.started.slice(0, 10) < startDate)
+      : [];
 
     const userMap = new Map<string, { displayName: string; seconds: number }>();
     for (const w of inSprint) {
@@ -355,22 +393,46 @@ export async function fetchSprintIssues(
       }
     }
 
+    const previousUserMap = new Map<string, { displayName: string; seconds: number }>();
+    for (const w of beforeSprint) {
+      const entry = previousUserMap.get(w.authorAccountId);
+      if (entry) {
+        entry.seconds += w.timeSpentSeconds;
+      } else {
+        previousUserMap.set(w.authorAccountId, { displayName: w.authorDisplayName, seconds: w.timeSpentSeconds });
+      }
+    }
+
     const sprintLoggedSeconds = inSprint.reduce((s, w) => s + w.timeSpentSeconds, 0);
+    const previousLoggedSeconds = beforeSprint.reduce((s, w) => s + w.timeSpentSeconds, 0);
     const totalLoggedSeconds = all.reduce((s, w) => s + w.timeSpentSeconds, 0);
 
     return {
       id: issue.id,
       key: issue.key,
       summary: issue.summary,
+      issueTypeName: issue.issueTypeName,
+      parentKey: issue.parentKey,
+      parentSummary: issue.parentSummary,
       assigneeAccountId: issue.assigneeAccountId,
       assigneeDisplayName: issue.assigneeDisplayName,
       statusName: issue.statusName,
       eta: issue.eta,
       sprintGoal: issue.sprintGoal,
+      previousLoggedSeconds,
+      previousLoggedHours: toHours(previousLoggedSeconds),
       sprintLoggedSeconds,
       sprintLoggedHours: toHours(sprintLoggedSeconds),
       totalLoggedSeconds,
       totalLoggedHours: toHours(totalLoggedSeconds),
+      previousUserBreakdown: Array.from(previousUserMap.entries())
+        .map(([accountId, { displayName, seconds }]) => ({
+          accountId,
+          displayName,
+          loggedSeconds: seconds,
+          loggedHours: toHours(seconds)
+        }))
+        .sort((a, b) => b.loggedSeconds - a.loggedSeconds),
       userBreakdown: Array.from(userMap.entries())
         .map(([accountId, { displayName, seconds }]) => ({
           accountId,
@@ -381,4 +443,89 @@ export async function fetchSprintIssues(
         .sort((a, b) => b.loggedSeconds - a.loggedSeconds)
     };
   });
+}
+
+async function fetchSprintIssuesMeta(
+  sprintId: number
+): Promise<Array<{ statusName?: string; sprintGoal: string }>> {
+  const sprintGoalFieldId = process.env.JIRA_SPRINT_GOAL_FIELD_ID ?? "customfield_10104";
+  const issues: Array<{ statusName?: string; sprintGoal: string }> = [];
+  let startAt = 0;
+
+  while (true) {
+    const page = await jiraFetch<{
+      issues?: Array<{ fields?: { status?: { name?: string }; [key: string]: unknown } }>;
+      total?: number;
+      startAt?: number;
+      maxResults?: number;
+    }>(`/rest/agile/1.0/sprint/${sprintId}/issue?fields=status,${sprintGoalFieldId}&startAt=${startAt}&maxResults=${PAGE_SIZE}`);
+
+    for (const issue of page.issues ?? []) {
+      issues.push({
+        statusName: issue.fields?.status?.name,
+        sprintGoal: ((issue.fields?.[sprintGoalFieldId] as { value?: string } | null)?.value) ?? "",
+      });
+    }
+
+    const next = (page.startAt ?? 0) + (page.maxResults ?? PAGE_SIZE);
+    if (next >= (page.total ?? 0) || (page.issues ?? []).length === 0) break;
+    startAt = next;
+  }
+
+  return issues;
+}
+
+export async function fetchSprintGoalsSummary(): Promise<SprintGoalsSummary> {
+  const boards = await fetchAllBoards();
+
+  const boardSprints = await runConcurrent(
+    boards.map((board) => async () => {
+      try {
+        return { board, sprints: await fetchActiveSprintsForBoard(board.id) };
+      } catch {
+        return { board, sprints: [] as Sprint[] };
+      }
+    }),
+    4
+  );
+
+  const activeSprints: Array<{ sprint: Sprint; projectKey: string; projectName: string }> = [];
+  const seenIds = new Set<number>();
+  for (const { board, sprints } of boardSprints) {
+    for (const sprint of sprints) {
+      if (seenIds.has(sprint.id)) continue;
+      seenIds.add(sprint.id);
+      activeSprints.push({ sprint, projectKey: board.projectKey, projectName: board.projectName });
+    }
+  }
+
+  const issueGroups = await runConcurrent(
+    activeSprints.map(({ sprint }) => () => fetchSprintIssuesMeta(sprint.id)),
+    4
+  );
+
+  const projectMap = new Map<string, { projectName: string; achieved: number; total: number }>();
+  for (let i = 0; i < activeSprints.length; i++) {
+    const { projectKey, projectName } = activeSprints[i]!;
+    const issues = issueGroups[i] ?? [];
+    const withGoal = issues.filter((iss) => iss.sprintGoal);
+    const achieved = withGoal.filter((iss) => isGoalAchieved(iss.statusName, iss.sprintGoal)).length;
+    const existing = projectMap.get(projectKey);
+    if (existing) {
+      existing.achieved += achieved;
+      existing.total += withGoal.length;
+    } else {
+      projectMap.set(projectKey, { projectName, achieved, total: withGoal.length });
+    }
+  }
+
+  const byProject = [...projectMap.entries()]
+    .map(([projectKey, { projectName, achieved, total }]) => ({ projectKey, projectName, achieved, total }))
+    .sort((a, b) => a.projectName.localeCompare(b.projectName));
+
+  return {
+    achieved: byProject.reduce((s, p) => s + p.achieved, 0),
+    total: byProject.reduce((s, p) => s + p.total, 0),
+    byProject,
+  };
 }

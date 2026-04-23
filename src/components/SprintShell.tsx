@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Sprint, SprintBoard, SprintIssue, SprintProject, SprintResult } from "@/lib/jira/sprint-types";
-import { avatarColor, initials } from "@/lib/teams";
 import { parseTimeToSeconds } from "@/lib/time-parser";
 
 function formatHours(h: number): string {
@@ -46,15 +46,23 @@ function StatusPill({ status }: { status?: string }) {
   return <span className={`sprint-status-pill sprint-status-${variant}`}>{status}</span>;
 }
 
-function VarianceCell({ totalLoggedSeconds, eta }: { totalLoggedSeconds: number; eta: string }) {
-  if (!eta) return <span className="sprint-variance-na">—</span>;
+function VarianceCell({
+  eta,
+  previousLoggedSeconds,
+  sprintLoggedSeconds,
+}: {
+  eta: string;
+  previousLoggedSeconds: number;
+  sprintLoggedSeconds: number;
+}) {
+  if (!eta) return <span className="sprint-variance-na">No ETA</span>;
   const etaSeconds = parseTimeToSeconds(eta);
-  if (!etaSeconds) return <span className="sprint-variance-na">—</span>;
-  const diff = totalLoggedSeconds - etaSeconds;
+  if (!etaSeconds) return <span className="sprint-variance-na">No ETA</span>;
+  const diff = etaSeconds - (previousLoggedSeconds + sprintLoggedSeconds);
   if (diff === 0) return <span className="sprint-variance-zero">on target</span>;
   const h = (Math.abs(diff) / 3600).toFixed(2);
-  return <span className={diff > 0 ? "sprint-variance-over" : "sprint-variance-under"}>
-    {diff > 0 ? `+${h}h` : `−${h}h`}
+  return <span className={diff < 0 ? "sprint-variance-over" : "sprint-variance-under"}>
+    {diff > 0 ? `+${h}h` : `-${h}h`}
   </span>;
 }
 
@@ -77,10 +85,27 @@ function SprintDateRange({ startDate, endDate }: { startDate?: string; endDate?:
   );
 }
 
-function UserTooltip({ breakdown }: { breakdown: SprintIssue["userBreakdown"] }) {
-  if (breakdown.length === 0) return <div className="sprint-tooltip"><span className="sprint-tooltip-empty">No logs</span></div>;
+type TooltipPlacement = "above" | "below";
+
+function UserTooltip({
+  breakdown,
+  placement = "above",
+  style,
+}: {
+  breakdown: SprintIssue["userBreakdown"];
+  placement?: TooltipPlacement;
+  style?: CSSProperties;
+}) {
+  const className = `sprint-tooltip sprint-tooltip--${placement}`;
+  if (breakdown.length === 0) {
+    return (
+      <div className={className} style={style}>
+        <span className="sprint-tooltip-empty">No logs</span>
+      </div>
+    );
+  }
   return (
-    <div className="sprint-tooltip">
+    <div className={className} style={style}>
       {breakdown.map((u) => (
         <div key={u.accountId} className="sprint-tooltip-row">
           <span>{u.displayName}</span>
@@ -91,21 +116,155 @@ function UserTooltip({ breakdown }: { breakdown: SprintIssue["userBreakdown"] })
   );
 }
 
-function sprintTotalHours(startDate?: string, endDate?: string): number | null {
-  if (!startDate || !endDate) return null;
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  const days = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-  return days * 8;
+function FloatingUserTooltip({
+  tooltip,
+}: {
+  tooltip: {
+    x: number;
+    y: number;
+    placement: TooltipPlacement;
+    breakdown: SprintIssue["userBreakdown"];
+  } | null;
+}) {
+  if (!tooltip || typeof document === "undefined") return null;
+  return createPortal(
+    <UserTooltip
+      breakdown={tooltip.breakdown}
+      placement={tooltip.placement}
+      style={{ left: tooltip.x, top: tooltip.y }}
+    />,
+    document.body
+  );
 }
 
-function SprintOverview({ issues, startDate, endDate }: { issues: SprintIssue[]; startDate?: string; endDate?: string }) {
+type SprintIssueAggregate = {
+  etaSeconds: number;
+  previousLoggedSeconds: number;
+  previousLoggedHours: number;
+  sprintLoggedSeconds: number;
+  sprintLoggedHours: number;
+  previousUserBreakdown: SprintIssue["previousUserBreakdown"];
+  userBreakdown: SprintIssue["userBreakdown"];
+};
+
+type SprintIssueRow =
+  | { kind: "issue"; issue: SprintIssue }
+  | { kind: "story"; issue: SprintIssue; children: SprintIssue[]; aggregate: SprintIssueAggregate };
+
+function isStoryIssue(issue: SprintIssue): boolean {
+  return (issue.issueTypeName ?? "").toLowerCase() === "story";
+}
+
+function IssueTypeBadge({ issueTypeName }: { issueTypeName?: string }) {
+  const label = issueTypeName || "Task";
+  const normalized = label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return (
+    <span className={`sprint-issue-type-badge sprint-issue-type-badge--${normalized}`}>
+      {label}
+    </span>
+  );
+}
+
+function combineBreakdowns(
+  issues: SprintIssue[],
+  key: "previousUserBreakdown" | "userBreakdown"
+): SprintIssue["userBreakdown"] {
+  const map = new Map<string, { displayName: string; seconds: number }>();
+  for (const issue of issues) {
+    for (const entry of issue[key]) {
+      const current = map.get(entry.accountId);
+      if (current) {
+        current.seconds += entry.loggedSeconds;
+      } else {
+        map.set(entry.accountId, {
+          displayName: entry.displayName,
+          seconds: entry.loggedSeconds,
+        });
+      }
+    }
+  }
+  return Array.from(map.entries())
+    .map(([accountId, { displayName, seconds }]) => ({
+      accountId,
+      displayName,
+      loggedSeconds: seconds,
+      loggedHours: Math.round((seconds / 3600) * 100) / 100,
+    }))
+    .sort((a, b) => b.loggedSeconds - a.loggedSeconds);
+}
+
+function aggregateChildIssues(children: SprintIssue[]): SprintIssueAggregate {
+  const etaSeconds = children.reduce((sum, child) => sum + (parseTimeToSeconds(child.eta) ?? 0), 0);
+  const previousLoggedSeconds = children.reduce((sum, child) => sum + child.previousLoggedSeconds, 0);
+  const sprintLoggedSeconds = children.reduce((sum, child) => sum + child.sprintLoggedSeconds, 0);
+  return {
+    etaSeconds,
+    previousLoggedSeconds,
+    previousLoggedHours: Math.round((previousLoggedSeconds / 3600) * 100) / 100,
+    sprintLoggedSeconds,
+    sprintLoggedHours: Math.round((sprintLoggedSeconds / 3600) * 100) / 100,
+    previousUserBreakdown: combineBreakdowns(children, "previousUserBreakdown"),
+    userBreakdown: combineBreakdowns(children, "userBreakdown"),
+  };
+}
+
+function buildSprintRows(issues: SprintIssue[]): SprintIssueRow[] {
+  const issueByKey = new Map(issues.map((issue) => [issue.key, issue]));
+  const childrenByParent = new Map<string, SprintIssue[]>();
+
+  for (const issue of issues) {
+    if (!issue.parentKey) continue;
+    const parent = issueByKey.get(issue.parentKey);
+    if (!parent || !isStoryIssue(parent)) continue;
+    const children = childrenByParent.get(issue.parentKey) ?? [];
+    children.push(issue);
+    childrenByParent.set(issue.parentKey, children);
+  }
+
+  const childKeys = new Set(
+    Array.from(childrenByParent.values()).flat().map((issue) => issue.key)
+  );
+
+  return issues
+    .filter((issue) => !childKeys.has(issue.key))
+    .map((issue) => {
+      const children = childrenByParent.get(issue.key) ?? [];
+      if (isStoryIssue(issue) && children.length > 0) {
+        return {
+          kind: "story",
+          issue,
+          children,
+          aggregate: aggregateChildIssues(children),
+        };
+      }
+      return { kind: "issue", issue };
+    });
+}
+
+function VarianceFromSeconds({
+  etaSeconds,
+  previousLoggedSeconds,
+  sprintLoggedSeconds,
+}: {
+  etaSeconds: number;
+  previousLoggedSeconds: number;
+  sprintLoggedSeconds: number;
+}) {
+  if (!etaSeconds) return <span className="sprint-variance-na">No ETA</span>;
+  const diff = etaSeconds - (previousLoggedSeconds + sprintLoggedSeconds);
+  if (diff === 0) return <span className="sprint-variance-zero">on target</span>;
+  const h = (Math.abs(diff) / 3600).toFixed(2);
+  return <span className={diff < 0 ? "sprint-variance-over" : "sprint-variance-under"}>
+    {diff > 0 ? `+${h}h` : `-${h}h`}
+  </span>;
+}
+
+function SprintOverview({ issues }: { issues: SprintIssue[] }) {
   const goalsMet = issues.filter((i) => isGoalAchieved(i.statusName, i.sprintGoal)).length;
   const goalsSet = issues.filter((i) => i.sprintGoal).length;
   const totalLoggedSeconds = issues.reduce((sum, i) => sum + i.sprintLoggedSeconds, 0);
   const totalLoggedHours = (totalLoggedSeconds / 3600).toFixed(1);
   const unstarted = issues.filter((i) => i.sprintLoggedHours === 0).length;
-  const totalSprint = sprintTotalHours(startDate, endDate);
 
   return (
     <div className="sprint-overview">
@@ -121,12 +280,6 @@ function SprintOverview({ issues, startDate, endDate }: { issues: SprintIssue[];
         <span className="sprint-overview-value">{unstarted}</span>
         <span className="sprint-overview-label">Unstarted Tasks</span>
       </div>
-      {totalSprint !== null && (
-        <div className="sprint-overview-card">
-          <span className="sprint-overview-value">{totalSprint}h</span>
-          <span className="sprint-overview-label">Total Sprint Time</span>
-        </div>
-      )}
     </div>
   );
 }
@@ -215,7 +368,36 @@ export function SprintShell() {
   const [results, setResults] = useState<SprintResult[]>([]);
   const [applying, setApplying] = useState(false);
 
-  const [hoveredCell, setHoveredCell] = useState<string | null>(null);
+  const [tooltip, setTooltip] = useState<{
+    x: number;
+    y: number;
+    placement: TooltipPlacement;
+    breakdown: SprintIssue["userBreakdown"];
+  } | null>(null);
+  const [expandedStoryKeys, setExpandedStoryKeys] = useState<Set<string>>(new Set());
+
+  function showTooltip(
+    target: HTMLElement,
+    breakdown: SprintIssue["userBreakdown"]
+  ) {
+    const rect = target.getBoundingClientRect();
+    const placement: TooltipPlacement = rect.top > 150 ? "above" : "below";
+    setTooltip({
+    x: rect.left + rect.width / 2,
+      y: placement === "above" ? rect.top : rect.bottom,
+      placement,
+      breakdown,
+    });
+  }
+
+  function toggleStoryRow(storyKey: string) {
+    setExpandedStoryKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(storyKey)) next.delete(storyKey);
+      else next.add(storyKey);
+      return next;
+    });
+  }
 
   useEffect(() => {
     fetch("/api/sprints/projects")
@@ -363,6 +545,162 @@ export function SprintShell() {
 
   const canApply = selectedSprintIds.size > 0 && !applying;
 
+  function renderIssueRow(issue: SprintIssue, result: SprintResult, options?: { child?: boolean }) {
+    const cellKey = `${result.sprintId}-${issue.key}`;
+    const noLogs = issue.sprintLoggedHours === 0;
+    const rowClass = [
+      "sprint-issue-row",
+      options?.child ? "sprint-issue-row--child" : "",
+      noLogs ? "sprint-issue-row--no-logs" : "",
+    ].filter(Boolean).join(" ");
+
+    return (
+      <div key={issue.key} className={rowClass}>
+        <div className="sprint-issue-name-cell">
+          <a
+            href={`${process.env.NEXT_PUBLIC_JIRA_BASE_URL}/browse/${issue.key}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="sprint-issue-link"
+          >
+            <div className="sprint-issue-summary">{issue.summary}</div>
+            <div className="sprint-issue-meta-line">
+              <IssueTypeBadge issueTypeName={issue.issueTypeName} />
+              <span className="sprint-issue-key">{issue.key}</span>
+            </div>
+          </a>
+        </div>
+
+        <span className="sprint-goal-cell">
+          {issue.sprintGoal ? (
+            <>
+              <span className={`sprint-goal-dot sprint-goal-dot--${isGoalAchieved(issue.statusName, issue.sprintGoal) ? "achieved" : "pending"}`} />
+              {issue.sprintGoal}
+            </>
+          ) : "No sprint goal"}
+        </span>
+
+        <span className="sprint-eta-cell">{issue.eta || "No ETA"}</span>
+
+        <div
+          className="sprint-time-cell-wrap"
+          onMouseEnter={(event) => showTooltip(event.currentTarget, issue.previousUserBreakdown)}
+          onMouseLeave={() => setTooltip(null)}
+        >
+          <span className="sprint-time-logged">
+            {formatHours(issue.previousLoggedHours)}
+          </span>
+        </div>
+
+        <div
+          className="sprint-time-cell-wrap"
+          onMouseEnter={(event) => {
+            if (!noLogs) showTooltip(event.currentTarget, issue.userBreakdown);
+          }}
+          onMouseLeave={() => setTooltip(null)}
+        >
+          <span className={`sprint-time-logged${noLogs ? " sprint-time-logged--empty" : ""}`}>
+            {noLogs ? "No logs" : formatHours(issue.sprintLoggedHours)}
+          </span>
+        </div>
+
+        <VarianceCell
+          eta={issue.eta}
+          previousLoggedSeconds={issue.previousLoggedSeconds}
+          sprintLoggedSeconds={issue.sprintLoggedSeconds}
+        />
+
+        <div className="sprint-status-cell">
+          <StatusPill status={issue.statusName} />
+        </div>
+      </div>
+    );
+  }
+
+  function renderStoryRow(row: Extract<SprintIssueRow, { kind: "story" }>, result: SprintResult) {
+    const storyKey = `${result.sprintId}-${row.issue.key}`;
+    const expanded = expandedStoryKeys.has(storyKey);
+    const achieved = row.children.filter((child) => isGoalAchieved(child.statusName, child.sprintGoal)).length;
+    const noLogs = row.aggregate.sprintLoggedHours === 0;
+    const rowClass = [
+      "sprint-issue-row",
+      "sprint-issue-row--story",
+      noLogs ? "sprint-issue-row--no-logs" : "",
+    ].filter(Boolean).join(" ");
+
+    return (
+      <div key={row.issue.key} className={rowClass}>
+        <div className="sprint-issue-name-cell">
+          <div className="sprint-story-title-row">
+            <div className="sprint-story-title-main">
+              <a
+                href={`${process.env.NEXT_PUBLIC_JIRA_BASE_URL}/browse/${row.issue.key}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="sprint-issue-link sprint-story-link"
+              >
+                <span className="sprint-issue-summary">{row.issue.summary}</span>
+                <span className="sprint-issue-meta-line">
+                  <IssueTypeBadge issueTypeName={row.issue.issueTypeName} />
+                  <span className="sprint-issue-key">{row.issue.key}</span>
+                </span>
+              </a>
+            </div>
+            <button
+              type="button"
+              className="sprint-story-toggle"
+              onClick={() => toggleStoryRow(storyKey)}
+              aria-expanded={expanded}
+            >
+              <span className={`sprint-story-chevron ${expanded ? "sprint-story-chevron--open" : ""}`}>▾</span>
+              {expanded ? "Hide tasks" : `View ${row.children.length} tasks`}
+            </button>
+          </div>
+        </div>
+
+        <span className="sprint-goal-cell sprint-goal-cell--story">
+          {achieved}/{row.children.length} sprint goal achieved
+        </span>
+
+        <span className="sprint-eta-cell">
+          {row.aggregate.etaSeconds ? formatHours(row.aggregate.etaSeconds / 3600) : "No ETA"}
+        </span>
+
+        <div
+          className="sprint-time-cell-wrap"
+          onMouseEnter={(event) => showTooltip(event.currentTarget, row.aggregate.previousUserBreakdown)}
+          onMouseLeave={() => setTooltip(null)}
+        >
+          <span className="sprint-time-logged">
+            {formatHours(row.aggregate.previousLoggedHours)}
+          </span>
+        </div>
+
+        <div
+          className="sprint-time-cell-wrap"
+          onMouseEnter={(event) => {
+            if (!noLogs) showTooltip(event.currentTarget, row.aggregate.userBreakdown);
+          }}
+          onMouseLeave={() => setTooltip(null)}
+        >
+          <span className={`sprint-time-logged${noLogs ? " sprint-time-logged--empty" : ""}`}>
+            {noLogs ? "No logs" : formatHours(row.aggregate.sprintLoggedHours)}
+          </span>
+        </div>
+
+        <VarianceFromSeconds
+          etaSeconds={row.aggregate.etaSeconds}
+          previousLoggedSeconds={row.aggregate.previousLoggedSeconds}
+          sprintLoggedSeconds={row.aggregate.sprintLoggedSeconds}
+        />
+
+        <div className="sprint-status-cell">
+          <StatusPill status={row.issue.statusName} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="sprint-shell">
       <div className="sprint-filter-bar">
@@ -450,7 +788,7 @@ export function SprintShell() {
               </div>
 
               {result.issues.length > 0 && (
-                <SprintOverview issues={result.issues} startDate={result.startDate} endDate={result.endDate} />
+                <SprintOverview issues={result.issues} />
               )}
 
               {result.issues.length === 0 ? (
@@ -459,75 +797,26 @@ export function SprintShell() {
                 <div className="sprint-issue-table">
                   <div className="sprint-issue-head">
                     <span>Task</span>
-                    <span>Status</span>
-                    <span>Assignee</span>
-                    <span>Time Logged (Sprint)</span>
                     <span>Sprint Goal</span>
+                    <span>Original ETA</span>
+                    <span>Logged Till Now</span>
+                    <span>Logged This Sprint</span>
+                    <span>Variance</span>
+                    <span>Status</span>
                   </div>
 
-                  {result.issues.map((issue) => {
-                    const cellKey = `${result.sprintId}-${issue.key}`;
-                    const noLogs = issue.sprintLoggedHours === 0;
-                    const rowClass = [
-                      "sprint-issue-row",
-                      noLogs ? "sprint-issue-row--no-logs" : "",
-                    ].filter(Boolean).join(" ");
+                  {buildSprintRows(result.issues).map((row) => {
+                    if (row.kind === "issue") {
+                      return renderIssueRow(row.issue, result);
+                    }
+
+                    const storyKey = `${result.sprintId}-${row.issue.key}`;
+                    const expanded = expandedStoryKeys.has(storyKey);
+
                     return (
-                      <div key={issue.key} className={rowClass}>
-                        <div className="sprint-issue-name-cell">
-                          <a
-                            href={`${process.env.NEXT_PUBLIC_JIRA_BASE_URL}/browse/${issue.key}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="sprint-issue-link"
-                          >
-                            <div className="sprint-issue-summary">{issue.summary}</div>
-                            <div className="sprint-issue-key">{issue.key}</div>
-                          </a>
-                        </div>
-
-                        <div className="sprint-status-cell">
-                          <StatusPill status={issue.statusName} />
-                        </div>
-
-                        <div className="sprint-assignee-cell">
-                          {issue.assigneeDisplayName ? (
-                            <>
-                              <div
-                                className="sprint-assignee-avatar"
-                                style={{ background: avatarColor(issue.assigneeAccountId ?? issue.key) }}
-                              >
-                                {initials(issue.assigneeDisplayName)}
-                              </div>
-                              <span>{issue.assigneeDisplayName}</span>
-                            </>
-                          ) : (
-                            <span className="sprint-unassigned">Unassigned</span>
-                          )}
-                        </div>
-
-                        <div
-                          className="sprint-time-cell-wrap"
-                          onMouseEnter={() => setHoveredCell(cellKey)}
-                          onMouseLeave={() => setHoveredCell(null)}
-                        >
-                          <span className={`sprint-time-logged${noLogs ? " sprint-time-logged--empty" : ""}`}>
-                            {noLogs ? "No logs" : formatHours(issue.sprintLoggedHours)}
-                          </span>
-                          {hoveredCell === cellKey && !noLogs && (
-                            <UserTooltip breakdown={issue.userBreakdown} />
-                          )}
-                        </div>
-
-                        <span className="sprint-goal-cell">
-                          {issue.sprintGoal ? (
-                            <>
-                              <span className={`sprint-goal-dot sprint-goal-dot--${isGoalAchieved(issue.statusName, issue.sprintGoal) ? "achieved" : "pending"}`} />
-                              {issue.sprintGoal}
-                            </>
-                          ) : "—"}
-                        </span>
-
+                      <div key={row.issue.key} className="sprint-story-group">
+                        {renderStoryRow(row, result)}
+                        {expanded && row.children.map((child) => renderIssueRow(child, result, { child: true }))}
                       </div>
                     );
                   })}
@@ -537,6 +826,7 @@ export function SprintShell() {
           ))}
         </div>
       ))}
+      <FloatingUserTooltip tooltip={tooltip} />
     </div>
   );
 }

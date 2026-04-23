@@ -31,15 +31,21 @@ export interface SprintIssue {
   id: string;
   key: string;
   summary: string;
+  issueTypeName?: string;
+  parentKey?: string;
+  parentSummary?: string;
   assigneeAccountId?: string;
   assigneeDisplayName?: string;
   statusName?: string;
   eta: string;
   sprintGoal: string; // value from Sprint Goal select field, e.g. "In Progress"
+  previousLoggedSeconds: number;
+  previousLoggedHours: number;
   sprintLoggedSeconds: number;
   sprintLoggedHours: number;
   totalLoggedSeconds: number;
   totalLoggedHours: number;
+  previousUserBreakdown: SprintIssueUserBreakdown[];
   userBreakdown: SprintIssueUserBreakdown[];
 }
 

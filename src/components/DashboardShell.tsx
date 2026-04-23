@@ -7,6 +7,7 @@ import { DateFilterBar } from "@/components/DateFilterBar";
 import { SettingsShell } from "@/components/SettingsShell";
 import { SprintShell } from "@/components/SprintShell";
 import type { JiraDashboardData, JiraUser, JiraUserSummary } from "@/lib/jira/types";
+import type { SprintGoalsSummary } from "@/lib/jira/sprints";
 import { parseTimeToSeconds } from "@/lib/time-parser";
 import {
   TEAM_COLOR_TOKENS,
@@ -211,38 +212,46 @@ function HoursBar({ user }: { user: JiraUserSummary }) {
   );
 }
 
-function SummaryStrip({ activeSprintCount, users }: { activeSprintCount: number | null; users: JiraUserSummary[] }) {
+function SummaryStrip({
+  activeSprintCount,
+  users,
+  sprintGoals,
+}: {
+  activeSprintCount: number | null;
+  users: JiraUserSummary[];
+  sprintGoals: SprintGoalsSummary | null;
+}) {
   const summary = summaryFromUsers(users);
-  const cards = [
-    { label: "Members", value: `${summary.members}` },
-    { label: "Active Sprints", value: activeSprintCount === null ? "—" : `${activeSprintCount}` },
-    { label: "Expected", value: formatHours(summary.expected) },
-    { label: "Logged", value: formatHours(summary.logged) },
-    { label: "Coverage", value: `${summary.coverage.toFixed(0)}%` },
-    {
-      label: "Below Target",
-      value: `${summary.belowTarget}`,
-      tone: summary.belowTarget > 0 ? "danger" : "neutral"
-    }
-  ];
+
+  const goalsTooltip = sprintGoals
+    ? sprintGoals.byProject
+        .map((p) => `${p.projectName}: ${p.achieved}/${p.total}`)
+        .join("\n")
+    : null;
 
   return (
     <div className="summary-strip">
-      {cards.map((card, index) => (
-        <div
-          key={card.label}
-          className={`summary-card ${index === cards.length - 1 ? "last" : ""}`}
-        >
-          <span className="summary-card-label">{card.label}</span>
+      <div className="summary-card">
+        <span className="summary-card-label">Members</span>
+        <span className="summary-card-value">{summary.members}</span>
+      </div>
+      <div className="summary-card">
+        <span className="summary-card-label">Active Sprints</span>
+        <span className="summary-card-value">{activeSprintCount === null ? "—" : activeSprintCount}</span>
+      </div>
+      <div className="summary-card last">
+        <span className="summary-card-label">Sprint Goals Achieved</span>
+        {sprintGoals === null ? (
+          <span className="summary-card-value">—</span>
+        ) : (
           <span
-            className={`summary-card-value ${
-              card.tone === "danger" ? "summary-card-value-danger" : ""
-            }`}
+            className="summary-card-value summary-card-goals"
+            {...(goalsTooltip ? { "data-tooltip": goalsTooltip } : {})}
           >
-            {card.value}
+            {sprintGoals.achieved}/{sprintGoals.total}
           </span>
-        </div>
-      ))}
+        )}
+      </div>
     </div>
   );
 }
@@ -256,6 +265,7 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
   const [activeSprintCount, setActiveSprintCount] = useState<number | null>(null);
   const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
   const [openTeams, setOpenTeams] = useState<Record<string, boolean>>({});
+  const [sprintGoals, setSprintGoals] = useState<SprintGoalsSummary | null>(null);
 
   useEffect(() => {
     if (view !== "dashboard") return;
@@ -270,6 +280,16 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
       .then((res) => res.json())
       .then((data: { count?: number }) => setActiveSprintCount(typeof data.count === "number" ? data.count : null))
       .catch(() => setActiveSprintCount(null));
+  }, [refreshKey, view]);
+
+  useEffect(() => {
+    if (view !== "dashboard") return;
+    fetch(`/api/sprints/goals-summary${refreshKey ? `?refresh=${encodeURIComponent(refreshKey)}` : ""}`)
+      .then((res) => res.json())
+      .then((data: SprintGoalsSummary) => {
+        if (typeof data.achieved === "number") setSprintGoals(data);
+      })
+      .catch(() => setSprintGoals(null));
   }, [refreshKey, view]);
 
   const userTeamsMap = useMemo(() => {
@@ -542,7 +562,7 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
             <SprintShell />
           ) : data ? (
       <main className="dashboard-main">
-        <SummaryStrip activeSprintCount={activeSprintCount} users={visibleUsers} />
+        <SummaryStrip activeSprintCount={activeSprintCount} users={visibleUsers} sprintGoals={sprintGoals} />
 
         <div className="toolbar-row">
           <div className="toolbar-left">

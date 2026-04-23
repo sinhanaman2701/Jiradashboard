@@ -98,6 +98,7 @@ export async function searchIssuesWithWorklogs(args: {
 }): Promise<JiraIssue[]> {
   const issues: JiraIssue[] = [];
   const etaFieldId = process.env.JIRA_ETA_FIELD_ID ?? "customfield_10071";
+  const productClientFieldId = process.env.JIRA_PRODUCT_CLIENT_FIELD_ID ?? "customfield_10137";
   const projectClause =
     args.projectKeys && args.projectKeys.length
       ? `project in (${args.projectKeys.map((key) => `"${key}"`).join(", ")}) AND `
@@ -118,6 +119,7 @@ export async function searchIssuesWithWorklogs(args: {
           parent?: { key?: string; fields?: { summary?: string; issuetype?: { name?: string } } };
           customfield_10014?: string;
           [etaFieldId]?: string | null;
+          [productClientFieldId]?: { value?: string } | null;
         };
       }>;
       isLast?: boolean;
@@ -126,7 +128,7 @@ export async function searchIssuesWithWorklogs(args: {
       method: "POST",
       body: JSON.stringify({
         jql,
-        fields: ["summary", "project", "status", "assignee", "parent", "customfield_10014", etaFieldId],
+        fields: ["summary", "project", "status", "assignee", "parent", "customfield_10014", etaFieldId, productClientFieldId],
         maxResults: PAGE_SIZE,
         ...(nextPageToken ? { nextPageToken } : {})
       })
@@ -151,7 +153,8 @@ export async function searchIssuesWithWorklogs(args: {
         assigneeDisplayName: issue.fields?.assignee?.displayName,
         epicKey,
         epicSummary,
-        eta: (issue.fields?.[etaFieldId] as string | null | undefined) ?? undefined
+        eta: (issue.fields?.[etaFieldId] as string | null | undefined) ?? undefined,
+        productClient: (issue.fields?.[productClientFieldId] as { value?: string } | null | undefined)?.value ?? undefined,
       });
     }
 

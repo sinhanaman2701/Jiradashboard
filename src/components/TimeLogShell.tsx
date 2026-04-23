@@ -5,7 +5,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { parseTimeToSeconds, secondsToHuman } from "@/lib/time-parser";
 import { avatarColor, initials } from "@/lib/teams";
-import type { JiraProject, JiraIssueOption, WorklogEntry } from "@/lib/jira/timelog";
+import type { JiraIssueOption, WorklogEntry } from "@/lib/jira/timelog";
+import type { AdminTimeLogOverview } from "@/lib/jira/timelog-admin";
 
 interface SessionUser {
   accountId: string;
@@ -13,44 +14,6 @@ interface SessionUser {
   email: string;
   avatarUrl: string;
   role: "admin" | "user";
-}
-
-interface AdminTimeLogDay {
-  date: string;
-  loggedSeconds: number;
-  loggedHours: number;
-  hasLogged: boolean;
-}
-
-interface AdminTimeLogEntry {
-  id: string;
-  date: string;
-  started: string;
-  issueKey: string;
-  issueSummary: string;
-  projectKey: string;
-  timeSpentSeconds: number;
-}
-
-interface AdminTimeLogDailyLog {
-  date: string;
-  loggedSeconds: number;
-  entries: AdminTimeLogEntry[];
-}
-
-interface AdminTimeLogUser {
-  accountId: string;
-  displayName: string;
-  todayLoggedSeconds: number;
-  todayLoggedHours: number;
-  days: AdminTimeLogDay[];
-  dailyLogs: AdminTimeLogDailyLog[];
-}
-
-interface AdminTimeLogOverview {
-  from: string;
-  to: string;
-  users: AdminTimeLogUser[];
 }
 
 interface WorklogHistoryResponse {
@@ -87,6 +50,21 @@ function todayIST(): string {
   }).format(new Date());
 }
 
+function currentIstTimestamp(): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const hour = parts.find((part) => part.type === "hour")?.value ?? "00";
+  const minute = parts.find((part) => part.type === "minute")?.value ?? "00";
+  const second = parts.find((part) => part.type === "second")?.value ?? "00";
+  return `${todayIST()}T${hour}:${minute}:${second}.000+0530`;
+}
+
 function formatShortDate(date: string): string {
   const [year, month, day] = date.split("-").map(Number);
   if (!year || !month || !day) return date;
@@ -98,8 +76,13 @@ function formatShortDate(date: string): string {
   }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
-function formatDailyTarget(seconds: number): string {
-  return `${secondsToHuman(seconds)}/8h`;
+function dayOfWeekShort(date: string): string {
+  const [year, month, day] = date.split("-").map(Number);
+  if (!year || !month || !day) return "";
+  return new Intl.DateTimeFormat("en-IN", {
+    weekday: "short",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
 function issueTypeBadge(type: string) {
@@ -114,19 +97,29 @@ function issueTypeBadge(type: string) {
   );
 }
 
+function estimateLabel(seconds: number): string {
+  return seconds > 0 ? secondsToHuman(seconds) : "No ETA";
+}
+
+function sortIssuesByLatestLog(issues: JiraIssueOption[]): JiraIssueOption[] {
+  return [...issues].sort((a, b) => {
+    if (a.latestLoggedAt && b.latestLoggedAt) return b.latestLoggedAt.localeCompare(a.latestLoggedAt);
+    if (a.latestLoggedAt) return -1;
+    if (b.latestLoggedAt) return 1;
+    return a.summary.localeCompare(b.summary);
+  });
+}
+
 export function TimeLogShell({ user }: { user: SessionUser }) {
   const router = useRouter();
 
   // Form state
-  const [projects, setProjects] = useState<JiraProject[]>([]);
-  const [projectsLoading, setProjectsLoading] = useState(user.role !== "admin");
-  const [selectedProject, setSelectedProject] = useState("");
   const [issueQuery, setIssueQuery] = useState("");
   const [issueResults, setIssueResults] = useState<JiraIssueOption[]>([]);
   const [issueLoading, setIssueLoading] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<JiraIssueOption | null>(null);
-  const [showIssueDropdown, setShowIssueDropdown] = useState(false);
-  const [date, setDate] = useState(todayIST());
+  const [visibleTaskCount, setVisibleTaskCount] = useState(10);
+  const [issueRefreshVersion, setIssueRefreshVersion] = useState(0);
   const [timeInput, setTimeInput] = useState("");
   const [timeError, setTimeError] = useState("");
   const [description, setDescription] = useState("");
@@ -143,17 +136,8 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
   const [adminOverview, setAdminOverview] = useState<AdminTimeLogOverview | null>(null);
   const [adminOverviewLoading, setAdminOverviewLoading] = useState(user.role === "admin");
 
-  const issueDropdownRef = useRef<HTMLDivElement>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const issueSearchAbortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    if (user.role === "admin") return;
-    fetch("/api/timelog/projects")
-      .then((r) => r.json())
-      .then((data: JiraProject[]) => setProjects(Array.isArray(data) ? data : []))
-      .finally(() => setProjectsLoading(false));
-  }, [user.role]);
 
   const loadHistory = useCallback((page: number) => {
     setHistoryLoading(true);
@@ -164,6 +148,12 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
         setHistoryPage(data.page ?? page);
         setHistoryTotal(data.total ?? 0);
         setHistoryTotalPages(data.totalPages ?? 1);
+      })
+      .catch(() => {
+        setHistory([]);
+        setHistoryPage(page);
+        setHistoryTotal(0);
+        setHistoryTotalPages(1);
       })
       .finally(() => setHistoryLoading(false));
   }, []);
@@ -190,7 +180,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
 
   // Debounced issue search
   useEffect(() => {
-    if (!selectedProject) {
+    if (user.role === "admin") {
       setIssueResults([]);
       return;
     }
@@ -200,10 +190,10 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
       const controller = new AbortController();
       issueSearchAbortRef.current = controller;
       setIssueLoading(true);
-      fetch(`/api/timelog/issues?project=${encodeURIComponent(selectedProject)}&q=${encodeURIComponent(issueQuery)}`, {
+      fetch(`/api/timelog/issues?q=${encodeURIComponent(issueQuery)}`, {
         signal: controller.signal,
       })
-        .then((r) => r.json())
+        .then((r) => (r.ok ? r.json() : []))
         .then((data: JiraIssueOption[]) => setIssueResults(Array.isArray(data) ? data : []))
         .catch((error) => {
           if ((error as Error).name !== "AbortError") setIssueResults([]);
@@ -220,18 +210,11 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
       if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
       issueSearchAbortRef.current?.abort();
     };
-  }, [selectedProject, issueQuery]);
+  }, [issueQuery, issueRefreshVersion, user.role]);
 
-  // Close issue dropdown on outside click
   useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (issueDropdownRef.current && !issueDropdownRef.current.contains(e.target as Node)) {
-        setShowIssueDropdown(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
+    setVisibleTaskCount(10);
+  }, [issueQuery]);
 
   async function handleLogout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -243,7 +226,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
     setSubmitError("");
     setSubmitSuccess(false);
 
-    const seconds = parseTimeToSeconds(timeInput);
+    const seconds = parseTimeToSeconds(timeInput.trim());
     if (!seconds) {
       setTimeError("Enter a valid time like 2h, 30m, or 2h 30m");
       return;
@@ -252,6 +235,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
 
     if (!selectedIssue) return;
 
+    const issueBeingLogged = selectedIssue;
     setSubmitting(true);
     try {
       const res = await fetch("/api/timelog/log", {
@@ -260,29 +244,43 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
         body: JSON.stringify({
           issueKey: selectedIssue.key,
           timeSpentSeconds: seconds,
-          date,
+          date: todayIST(),
           comment: description,
         }),
       });
-      const data = await res.json() as { ok?: boolean; error?: string };
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; error?: string };
       if (!res.ok || !data.ok) {
         setSubmitError(data.error ?? "Failed to log time. Please try again.");
       } else {
+        setIssueResults((current) => sortIssuesByLatestLog(
+          current.map((issue) =>
+            issue.key === issueBeingLogged.key
+              ? {
+                  ...issue,
+                  totalLoggedSeconds: issue.totalLoggedSeconds + seconds,
+                  latestLoggedAt: currentIstTimestamp(),
+                }
+              : issue
+          )
+        ));
         setSubmitSuccess(true);
         setSelectedIssue(null);
         setIssueQuery("");
         setTimeInput("");
         setDescription("");
-        setDate(todayIST());
+        setIssueRefreshVersion((current) => current + 1);
         loadHistory(1);
         loadAdminOverview();
       }
+    } catch {
+      setSubmitError("Failed to log time. Please try again.");
     } finally {
       setSubmitting(false);
     }
   }
 
-  const canSubmit = Boolean(selectedIssue && timeInput && date && !submitting);
+  const canSubmit = Boolean(selectedIssue && timeInput.trim() && !submitting);
+  const visibleTasks = issueResults.slice(0, visibleTaskCount);
   const jiraBaseUrl = process.env.NEXT_PUBLIC_JIRA_BASE_URL ?? "";
 
   return (
@@ -371,7 +369,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                   <div>
                     <div className="section-label">Team Time Logging</div>
                     <p className="timelog-admin-sub">
-                      Today&apos;s logged time and last 7 days logging status for every active Jira user.
+                      Last 5 days logging activity · 40h weekly target (Mon–Fri)
                     </p>
                   </div>
                   {!adminOverviewLoading && adminOverview && (
@@ -382,88 +380,96 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                 {adminOverviewLoading ? (
                   <div className="timelog-history-loading">Loading team logging status…</div>
                 ) : !adminOverview || adminOverview.users.length === 0 ? (
-                  <div className="empty-state">No active users found for the last 7 days.</div>
+                  <div className="empty-state">No active users found.</div>
                 ) : (
                   <div className="timelog-admin-list">
-                    {adminOverview.users.map((member) => (
-                      <details key={member.accountId} className="timelog-admin-card">
-                        <summary className="timelog-admin-summary member-summary">
-                          <span
-                            className="avatar-circle"
-                            style={{ background: avatarColor(member.accountId) }}
-                            aria-hidden="true"
-                          >
+                    {adminOverview.users.map((member) => {
+                      const whours = Math.round((member.weeklyLoggedSeconds / 3600) * 10) / 10;
+                      return (
+                        <details key={member.accountId} className="timelog-admin-card">
+                          <summary className="timelog-admin-summary member-summary timelog-admin-tab-row">
+                            <span
+                              className="avatar-circle"
+                              style={{ background: avatarColor(member.accountId) }}
+                              aria-hidden="true"
+                            >
                               {initials(member.displayName)}
-                          </span>
-
-                          <span className="member-identity">
-                            <span className="member-name">{member.displayName}</span>
-                            <span className="member-subtitle">Last 7 days logging activity</span>
-                          </span>
-
-                          <span className="metric-chip">
-                            <span className="metric-chip-label">Today</span>
-                            <span className="metric-chip-value">
-                              {member.todayLoggedSeconds > 0 ? secondsToHuman(member.todayLoggedSeconds) : "0h"}
                             </span>
-                          </span>
 
-                          <span className="timelog-admin-overs" aria-label="Last 7 days logging status">
-                            {member.days.map((day) => (
-                              <span
-                                key={day.date}
-                                className={`timelog-day-dot ${day.hasLogged ? "logged" : "missing"}`}
-                                title={`${formatShortDate(day.date)}: ${day.hasLogged ? `${day.loggedHours}h logged` : "No logs"}`}
-                              />
-                            ))}
-                          </span>
+                            <span className="member-identity">
+                              <span className="member-name">{member.displayName}</span>
+                              <span className="member-subtitle">Last 5 days</span>
+                            </span>
 
-                          <span className={member.todayLoggedSeconds > 0 ? "status-pill status-complete" : "status-pill status-missing"}>
-                            {member.todayLoggedSeconds > 0 ? "logged" : "missing"}
-                          </span>
+                            <span className="timelog-weekly-chip">
+                              <span className="timelog-weekly-hours">{whours}</span>
+                              <span className="timelog-weekly-sep">/</span>
+                              <span className="timelog-weekly-target">40h</span>
+                            </span>
 
-                          <span className="timelog-admin-toggle">View logs</span>
-                        </summary>
-                        <div className="timelog-admin-detail">
-                          {member.dailyLogs.length === 0 ? (
-                            <div className="timelog-admin-empty">No worklogs in the last 7 days.</div>
-                          ) : (
-                            member.dailyLogs.map((day) => (
-                              <details
-                                key={day.date}
-                                className={`timelog-admin-day ${day.loggedSeconds < 8 * 3600 ? "under-target" : ""}`}
-                              >
-                                <summary className="timelog-admin-day-summary">
-                                  <span className="timelog-history-date">{formatShortDate(day.date)}</span>
-                                  <span className="member-subtitle">{day.entries.length} task log{day.entries.length === 1 ? "" : "s"}</span>
-                                  <span className="timelog-day-total">{formatDailyTarget(day.loggedSeconds)}</span>
-                                  <span className="timelog-admin-toggle">View tasks</span>
-                                </summary>
-                                <div className="timelog-admin-day-entries">
-                                  {day.entries.map((entry) => (
-                                    <div key={entry.id} className="timelog-admin-log">
-                                      <span className="timelog-admin-log-issue">
-                                        <a
-                                          className="ticket-link"
-                                          href={jiraBaseUrl ? `${jiraBaseUrl}/browse/${entry.issueKey}` : "#"}
-                                          target={jiraBaseUrl ? "_blank" : undefined}
-                                          rel={jiraBaseUrl ? "noreferrer" : undefined}
-                                        >
-                                          {entry.issueKey}
-                                        </a>
-                                        <span>{entry.issueSummary}</span>
-                                      </span>
-                                      <span className="timelog-history-project">{entry.projectKey}</span>
-                                      <span className="timelog-history-time">{secondsToHuman(entry.timeSpentSeconds)}</span>
+                            <span className="timelog-admin-overs" aria-label="Last 5 days logging status">
+                              {member.days.map((day) => (
+                                <span
+                                  key={day.date}
+                                  className={`timelog-day-dot ${day.isWeekend ? "weekend" : day.hasLogged ? "logged" : "missing"}`}
+                                  data-tooltip={
+                                    day.isWeekend
+                                      ? `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)} · Weekly off`
+                                      : `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)} · ${day.hasLogged ? `${day.loggedHours}h logged` : "No logs"}`
+                                  }
+                                />
+                              ))}
+                            </span>
+
+                            <span className="timelog-admin-toggle">View logs</span>
+                          </summary>
+                          <div className="timelog-admin-detail">
+                            {member.productClientGroups.length === 0 ? (
+                              <div className="timelog-admin-empty">No worklogs in the last 5 days.</div>
+                            ) : (
+                              <div className="timelog-pc-groups">
+                                {member.productClientGroups.map((group) => (
+                                  <details key={group.label} className="timelog-pc-card">
+                                    <summary className="timelog-pc-summary">
+                                      <span className="timelog-pc-label">{group.label}</span>
+                                      <span className="timelog-pc-meta">{group.taskCount} task{group.taskCount === 1 ? "" : "s"}</span>
+                                      <span className="timelog-pc-hours">{secondsToHuman(group.totalLoggedSeconds)}</span>
+                                      <span className="timelog-admin-toggle">View tasks</span>
+                                    </summary>
+                                    <div className="timelog-pc-task-list">
+                                      <div className="timelog-pc-task-head">
+                                        <span>Task</span>
+                                        <span>ETA</span>
+                                        <span>Logged</span>
+                                        <span>Last logged</span>
+                                      </div>
+                                      {group.tasks.map((task) => (
+                                        <div key={task.issueKey} className="timelog-pc-task-row">
+                                          <span className="timelog-pc-task-name">
+                                            <a
+                                              className="ticket-link"
+                                              href={jiraBaseUrl ? `${jiraBaseUrl}/browse/${task.issueKey}` : "#"}
+                                              target={jiraBaseUrl ? "_blank" : undefined}
+                                              rel={jiraBaseUrl ? "noreferrer" : undefined}
+                                            >
+                                              {task.issueKey}
+                                            </a>
+                                            <span>{task.issueSummary}</span>
+                                          </span>
+                                          <span className="timelog-pc-task-eta">{task.eta ?? "—"}</span>
+                                          <span className="timelog-pc-task-logged">{secondsToHuman(task.loggedSeconds)}</span>
+                                          <span className="timelog-pc-task-date">{formatShortDate(task.lastLoggedAt.slice(0, 10))}</span>
+                                        </div>
+                                      ))}
                                     </div>
-                                  ))}
-                                </div>
-                              </details>
-                            ))
-                          )}
-                        </div>
-                      </details>
-                    ))}
+                                  </details>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -471,172 +477,171 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
 
             {user.role !== "admin" && (
               <>
-                {/* Log time form */}
                 <div className="timelog-form-card">
                   <div className="timelog-form-header">
-                    <h2 className="timelog-form-title">Log Time</h2>
-                    <p className="timelog-form-sub">Select one of your assigned tickets and enter the time you spent on it.</p>
+                    <h2 className="timelog-form-title">Your Assigned Tasks</h2>
+                    <p className="timelog-form-sub">Pick a task card and log time without searching through Jira.</p>
                   </div>
 
-                  <form onSubmit={handleSubmit} className="timelog-form-body">
-                    {/* Row 1: Project + Issue */}
-                    <div className="timelog-form-row">
-                      <div className="field-group" style={{ minWidth: 180, flex: "0 0 220px" }}>
-                        <label className="field-label" htmlFor="tl-project">Space (Project)</label>
-                        <select
-                          id="tl-project"
+                  <div className="timelog-form-body">
+                    <div className="timelog-task-toolbar">
+                      <div className="field-group timelog-task-search">
+                        <label className="field-label" htmlFor="tl-task-search">Search tasks</label>
+                        <input
+                          id="tl-task-search"
+                          type="text"
                           className="field-control"
-                          value={selectedProject}
-                          disabled={projectsLoading}
+                          style={{ width: "100%" }}
+                          placeholder="Search by task key or summary"
+                          value={issueQuery}
                           onChange={(e) => {
-                            setSelectedProject(e.target.value);
-                            setSelectedIssue(null);
-                            setIssueQuery("");
+                            setIssueQuery(e.target.value);
                           }}
-                        >
-                          <option value="">{projectsLoading ? "Loading…" : "Select project"}</option>
-                          {projects.map((p) => (
-                            <option key={p.id} value={p.key}>{p.name} ({p.key})</option>
-                          ))}
-                        </select>
+                        />
                       </div>
+                      <span className="section-status success">
+                        {issueLoading ? "Loading tasks…" : `${issueResults.length} assigned tasks`}
+                      </span>
+                    </div>
 
-                  <div className="field-group" style={{ flex: 1, minWidth: 240 }} ref={issueDropdownRef}>
-                    <label className="field-label" htmlFor="tl-issue">Task / Story / Bug / Epic</label>
-                    <div className="issue-search-wrap">
-                      <input
-                        id="tl-issue"
-                        type="text"
-                        className="field-control"
-                        style={{ width: "100%" }}
-                        placeholder={selectedProject ? "Search your assigned tasks…" : "Select a project first"}
-                        disabled={!selectedProject}
-                        value={selectedIssue ? `${selectedIssue.key} — ${selectedIssue.summary}` : issueQuery}
-                        onChange={(e) => {
-                          setSelectedIssue(null);
-                          setIssueQuery(e.target.value);
-                          setShowIssueDropdown(true);
-                        }}
-                        onFocus={() => {
-                          if (selectedProject) setShowIssueDropdown(true);
-                        }}
-                      />
-                      {showIssueDropdown && selectedProject && (
-                        <div
-                          className="issue-dropdown"
-                          onWheel={(event) => event.stopPropagation()}
-                        >
-                          {issueLoading ? (
-                            <div className="issue-dropdown-msg">Searching…</div>
-                          ) : issueResults.length === 0 ? (
-                            <div className="issue-dropdown-msg">No issues found</div>
-                          ) : (
-                            issueResults.map((issue) => (
+                    {issueLoading && issueResults.length === 0 ? (
+                      <div className="timelog-history-loading">Loading assigned tasks…</div>
+                    ) : issueResults.length === 0 ? (
+                      <div className="empty-state">No assigned tasks found.</div>
+                    ) : (
+                      <>
+                        <div className="timelog-task-grid">
+                          {visibleTasks.map((issue) => (
+                            <div key={issue.id} className="timelog-task-card">
+                              <div className="timelog-task-card-top">
+                                <span className="timelog-task-space">{issue.projectName} ({issue.projectKey})</span>
+                                {issueTypeBadge(issue.issueType)}
+                              </div>
+                              <div className="timelog-task-name-block">
+                                <a
+                                  className="timelog-task-title"
+                                  href={jiraBaseUrl ? `${jiraBaseUrl}/browse/${issue.key}` : "#"}
+                                  target={jiraBaseUrl ? "_blank" : undefined}
+                                  rel={jiraBaseUrl ? "noreferrer" : undefined}
+                                >
+                                  {issue.summary}
+                                </a>
+                                <div className="task-key">{issue.key}</div>
+                              </div>
+                              <div className="timelog-task-metrics">
+                                <span className="metric-chip">
+                                  <em className="metric-chip-label">ETA</em>
+                                  <strong className="metric-chip-value">{estimateLabel(issue.originalEstimateSeconds)}</strong>
+                                </span>
+                                <span className="metric-chip">
+                                  <em className="metric-chip-label">Logged till now</em>
+                                  <strong className="metric-chip-value">{secondsToHuman(issue.totalLoggedSeconds)}</strong>
+                                </span>
+                              </div>
+                              {issue.latestLoggedAt ? (
+                                <span className="issue-dropdown-recent">{formatRecentLogDate(issue.latestLoggedAt)}</span>
+                              ) : (
+                                <span className="timelog-task-muted">No time logged yet</span>
+                              )}
                               <button
-                                key={issue.id}
                                 type="button"
-                                className="issue-dropdown-item"
+                                className="primary-button timelog-task-log-button"
                                 onClick={() => {
                                   setSelectedIssue(issue);
-                                  setShowIssueDropdown(false);
-                                  setIssueQuery("");
+                                  setTimeInput("");
+                                  setDescription("");
+                                  setTimeError("");
+                                  setSubmitError("");
+                                  setSubmitSuccess(false);
                                 }}
                               >
-                                <div className="issue-dropdown-meta">
-                                  {issueTypeBadge(issue.issueType)}
-                                  <span className="issue-dropdown-key">{issue.key}</span>
-                                  <span className="issue-dropdown-status">{issue.status}</span>
-                                  {issue.latestLoggedAt && (
-                                    <span className="issue-dropdown-recent">{formatRecentLogDate(issue.latestLoggedAt)}</span>
-                                  )}
-                                </div>
-                                <div className="issue-dropdown-summary">{issue.summary}</div>
+                                Log time
                               </button>
-                            ))
-                          )}
+                            </div>
+                          ))}
                         </div>
-                      )}
-                    </div>
-                    {selectedIssue && (
-                      <div className="selected-issue-pill">
-                        {issueTypeBadge(selectedIssue.issueType)}
-                        <span className="selected-issue-key">{selectedIssue.key}</span>
-                        <span className="selected-issue-summary">{selectedIssue.summary}</span>
-                        <button
-                          type="button"
-                          className="selected-issue-clear"
-                          onClick={() => { setSelectedIssue(null); setIssueQuery(""); }}
-                          aria-label="Clear selection"
-                        >×</button>
-                      </div>
+                        {visibleTaskCount < issueResults.length && (
+                          <div className="timelog-load-more">
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => setVisibleTaskCount((current) => current + 10)}
+                            >
+                              Load more
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    {submitSuccess && (
+                      <span className="timelog-success-msg">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        Time logged successfully in Jira!
+                      </span>
                     )}
                   </div>
                 </div>
 
-                {/* Row 2: Date + Time + Description */}
-                <div className="timelog-form-row">
-                  <div className="field-group">
-                    <label className="field-label" htmlFor="tl-date">Date</label>
-                    <input
-                      id="tl-date"
-                      type="date"
-                      className="field-control"
-                      value={date}
-                      max={todayIST()}
-                      onChange={(e) => setDate(e.target.value)}
-                    />
+                {selectedIssue && (
+                  <div className="modal-backdrop" role="dialog" aria-modal="true">
+                    <form className="modal-panel" onSubmit={handleSubmit}>
+                      <div className="modal-title">Log time</div>
+                      <p className="modal-copy">
+                        {selectedIssue.key} · {selectedIssue.summary}
+                      </p>
+                      <div className="modal-fields">
+                        <div className="field-group">
+                          <label className="field-label" htmlFor="tl-time">Time Spent</label>
+                          <input
+                            id="tl-time"
+                            type="text"
+                            className={`field-control ${timeError ? "field-control-error" : ""}`}
+                            placeholder="e.g. 2h, 30m, 2h 30m"
+                            value={timeInput}
+                            onChange={(e) => { setTimeInput(e.target.value); setTimeError(""); }}
+                          />
+                          {timeError && <span className="inline-error">{timeError}</span>}
+                        </div>
+                        <div className="field-group">
+                          <label className="field-label" htmlFor="tl-desc">Comment (optional)</label>
+                          <input
+                            id="tl-desc"
+                            type="text"
+                            className="field-control"
+                            placeholder="What did you work on?"
+                            value={description}
+                            onChange={(e) => setDescription(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      {submitError && <span className="timelog-error-msg">{submitError}</span>}
+                      <div className="modal-actions">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => {
+                            if (submitting) return;
+                            setSelectedIssue(null);
+                            setTimeError("");
+                            setSubmitError("");
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          className="primary-button"
+                          disabled={!canSubmit}
+                        >
+                          {submitting ? "Logging…" : "Log"}
+                        </button>
+                      </div>
+                    </form>
                   </div>
-
-                  <div className="field-group">
-                    <label className="field-label" htmlFor="tl-time">Time Spent</label>
-                    <input
-                      id="tl-time"
-                      type="text"
-                      className={`field-control ${timeError ? "field-control-error" : ""}`}
-                      placeholder="e.g. 2h, 30m, 2h 30m"
-                      value={timeInput}
-                      onChange={(e) => { setTimeInput(e.target.value); setTimeError(""); }}
-                      style={{ minWidth: 160 }}
-                    />
-                    {timeError && <span className="inline-error">{timeError}</span>}
-                  </div>
-
-                  <div className="field-group" style={{ flex: 1, minWidth: 220 }}>
-                    <label className="field-label" htmlFor="tl-desc">Description (optional)</label>
-                    <input
-                      id="tl-desc"
-                      type="text"
-                      className="field-control"
-                      style={{ width: "100%" }}
-                      placeholder="What did you work on?"
-                      value={description}
-                      onChange={(e) => setDescription(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                {/* Submit row */}
-                <div className="timelog-submit-row">
-                  {submitSuccess && (
-                    <span className="timelog-success-msg">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                        <polyline points="20 6 9 17 4 12" />
-                      </svg>
-                      Time logged successfully in Jira!
-                    </span>
-                  )}
-                  {submitError && <span className="timelog-error-msg">{submitError}</span>}
-                  <button
-                    type="submit"
-                    className="primary-button"
-                    style={{ height: 38, padding: "0 24px" }}
-                    disabled={!canSubmit}
-                  >
-                    {submitting ? "Logging…" : "Log Time"}
-                  </button>
-                </div>
-                  </form>
-                </div>
+                )}
 
                 {/* History section */}
                 <div className="timelog-history-section">
