@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { AnacityLogo } from "@/components/AnacityLogo";
 import { getCurrentUser } from "@/lib/session";
 
 export default async function LoginPage({
@@ -22,15 +23,7 @@ export default async function LoginPage({
     <div className="login-screen">
       <div className="login-card">
         <div className="login-brand">
-          <div className="logo-mark" aria-hidden="true">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <rect x="1" y="1" width="5" height="5" rx="1.2" fill="white" opacity="0.9" />
-              <rect x="8" y="1" width="5" height="5" rx="1.2" fill="white" opacity="0.6" />
-              <rect x="1" y="8" width="5" height="5" rx="1.2" fill="white" opacity="0.6" />
-              <rect x="8" y="8" width="5" height="5" rx="1.2" fill="white" opacity="0.3" />
-            </svg>
-          </div>
-          <span className="login-app-name">Worklog</span>
+          <AnacityLogo variant="login" />
         </div>
 
         <h1 className="login-title">Sign in to continue</h1>

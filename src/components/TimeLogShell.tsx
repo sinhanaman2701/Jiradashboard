@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { AnacityLogo } from "@/components/AnacityLogo";
 import { parseTimeToSeconds, secondsToHuman } from "@/lib/time-parser";
 import { avatarColor, initials } from "@/lib/teams";
 import type { JiraIssueOption, WorklogEntry } from "@/lib/jira/timelog";
-import type { AdminTimeLogOverview } from "@/lib/jira/timelog-admin";
+import type { AdminTimeLogOverview, AdminTimeLogWeek, ProductClientGroup } from "@/lib/jira/timelog-admin";
 
 interface SessionUser {
   accountId: string;
@@ -85,6 +86,10 @@ function dayOfWeekShort(date: string): string {
   }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
+function formatWeekRange(from: string, to: string): string {
+  return `${formatShortDate(from)} - ${formatShortDate(to)}`;
+}
+
 function issueTypeBadge(type: string) {
   const lower = type.toLowerCase();
   let bg = "#dbeafe", color = "#1d4ed8", label = type;
@@ -108,6 +113,78 @@ function sortIssuesByLatestLog(issues: JiraIssueOption[]): JiraIssueOption[] {
     if (b.latestLoggedAt) return 1;
     return a.summary.localeCompare(b.summary);
   });
+}
+
+function renderProductClientGroups(
+  groups: ProductClientGroup[],
+  jiraBaseUrl?: string
+) {
+  if (groups.length === 0) {
+    return <div className="timelog-admin-empty">No worklogs in this week.</div>;
+  }
+
+  return (
+    <div className="timelog-pc-groups">
+      {groups.map((group) => (
+        <details key={group.label} className="timelog-pc-card">
+          <summary className="timelog-pc-summary">
+            <span className="timelog-pc-label">{group.label}</span>
+            <span className="timelog-pc-meta">{group.taskCount} task{group.taskCount === 1 ? "" : "s"}</span>
+            <span className="timelog-pc-hours">{secondsToHuman(group.totalLoggedSeconds)}</span>
+            <span className="timelog-admin-toggle">View tasks</span>
+          </summary>
+          <div className="timelog-pc-task-list">
+            <div className="timelog-pc-task-head">
+              <span>Task</span>
+              <span>ETA</span>
+              <span>Logged</span>
+              <span>Last logged</span>
+            </div>
+            {group.tasks.map((task) => (
+              <div key={task.issueKey} className="timelog-pc-task-row">
+                <span className="timelog-pc-task-name">
+                  <a
+                    className="ticket-link"
+                    href={jiraBaseUrl ? `${jiraBaseUrl}/browse/${task.issueKey}` : "#"}
+                    target={jiraBaseUrl ? "_blank" : undefined}
+                    rel={jiraBaseUrl ? "noreferrer" : undefined}
+                  >
+                    {task.issueKey}
+                  </a>
+                  <span>{task.issueSummary}</span>
+                </span>
+                <span className="timelog-pc-task-eta">{task.eta ?? "—"}</span>
+                <span className="timelog-pc-task-logged">{secondsToHuman(task.loggedSeconds)}</span>
+                <span className="timelog-pc-task-date">{formatShortDate(task.lastLoggedAt.slice(0, 10))}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+}
+
+function renderWeekGroups(weeks: AdminTimeLogWeek[], jiraBaseUrl?: string) {
+  return (
+    <div className="timelog-week-groups">
+      {weeks.map((week) => (
+        <details key={week.key} className="timelog-week-card" open={week.key === "this-week"}>
+          <summary className="timelog-week-summary">
+            <span className="timelog-week-label-wrap">
+              <span className="timelog-week-label">{week.label}</span>
+              <span className="timelog-week-range">{formatWeekRange(week.from, week.to)}</span>
+            </span>
+            <span className="timelog-week-hours">{secondsToHuman(week.totalLoggedSeconds)}</span>
+            <span className="timelog-admin-toggle">View logs</span>
+          </summary>
+          <div className="timelog-week-body">
+            {renderProductClientGroups(week.productClientGroups, jiraBaseUrl)}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
 }
 
 export function TimeLogShell({ user }: { user: SessionUser }) {
@@ -287,15 +364,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
     <div className="dashboard-screen">
       <header className="topbar">
         <div className="topbar-brand">
-          <div className="logo-mark" aria-hidden="true">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <rect x="1" y="1" width="5" height="5" rx="1.2" fill="white" opacity="0.9" />
-              <rect x="8" y="1" width="5" height="5" rx="1.2" fill="white" opacity="0.6" />
-              <rect x="1" y="8" width="5" height="5" rx="1.2" fill="white" opacity="0.6" />
-              <rect x="8" y="8" width="5" height="5" rx="1.2" fill="white" opacity="0.3" />
-            </svg>
-          </div>
-          <span className="app-name">Worklog</span>
+          <AnacityLogo variant="header" />
         </div>
         <div className="topbar-right">
           <div className="topbar-user">
@@ -366,12 +435,12 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
             {user.role === "admin" && (
               <div className="timelog-admin-section">
                 <div className="section-row" style={{ marginBottom: 12 }}>
-                  <div>
-                    <div className="section-label">Team Time Logging</div>
-                    <p className="timelog-admin-sub">
-                      Last 5 days logging activity · 40h weekly target (Mon–Fri)
-                    </p>
-                  </div>
+                    <div>
+                      <div className="section-label">Team Time Logging</div>
+                      <p className="timelog-admin-sub">
+                      This week logging activity · 40h weekly target (Mon–Fri)
+                      </p>
+                    </div>
                   {!adminOverviewLoading && adminOverview && (
                     <span className="section-status success">{adminOverview.users.length} users</span>
                   )}
@@ -398,7 +467,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
 
                             <span className="member-identity">
                               <span className="member-name">{member.displayName}</span>
-                              <span className="member-subtitle">Last 5 days</span>
+                              <span className="member-subtitle">This week</span>
                             </span>
 
                             <span className="timelog-weekly-chip">
@@ -407,15 +476,17 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                               <span className="timelog-weekly-target">40h</span>
                             </span>
 
-                            <span className="timelog-admin-overs" aria-label="Last 5 days logging status">
+                            <span className="timelog-admin-overs" aria-label="This week logging status">
                               {member.days.map((day) => (
                                 <span
                                   key={day.date}
-                                  className={`timelog-day-dot ${day.isWeekend ? "weekend" : day.hasLogged ? "logged" : "missing"}`}
+                                  className={`timelog-day-dot ${day.isWeekend ? "weekend" : day.isUpcoming ? "upcoming" : day.hasLogged ? "logged" : "missing"}`}
                                   data-tooltip={
                                     day.isWeekend
                                       ? `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)} · Weekly off`
-                                      : `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)} · ${day.hasLogged ? `${day.loggedHours}h logged` : "No logs"}`
+                                      : day.isUpcoming
+                                        ? `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)} · Upcoming`
+                                        : `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)} · ${day.hasLogged ? `${day.loggedHours}h logged` : "No logs"}`
                                   }
                                 />
                               ))}
@@ -424,48 +495,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                             <span className="timelog-admin-toggle">View logs</span>
                           </summary>
                           <div className="timelog-admin-detail">
-                            {member.productClientGroups.length === 0 ? (
-                              <div className="timelog-admin-empty">No worklogs in the last 5 days.</div>
-                            ) : (
-                              <div className="timelog-pc-groups">
-                                {member.productClientGroups.map((group) => (
-                                  <details key={group.label} className="timelog-pc-card">
-                                    <summary className="timelog-pc-summary">
-                                      <span className="timelog-pc-label">{group.label}</span>
-                                      <span className="timelog-pc-meta">{group.taskCount} task{group.taskCount === 1 ? "" : "s"}</span>
-                                      <span className="timelog-pc-hours">{secondsToHuman(group.totalLoggedSeconds)}</span>
-                                      <span className="timelog-admin-toggle">View tasks</span>
-                                    </summary>
-                                    <div className="timelog-pc-task-list">
-                                      <div className="timelog-pc-task-head">
-                                        <span>Task</span>
-                                        <span>ETA</span>
-                                        <span>Logged</span>
-                                        <span>Last logged</span>
-                                      </div>
-                                      {group.tasks.map((task) => (
-                                        <div key={task.issueKey} className="timelog-pc-task-row">
-                                          <span className="timelog-pc-task-name">
-                                            <a
-                                              className="ticket-link"
-                                              href={jiraBaseUrl ? `${jiraBaseUrl}/browse/${task.issueKey}` : "#"}
-                                              target={jiraBaseUrl ? "_blank" : undefined}
-                                              rel={jiraBaseUrl ? "noreferrer" : undefined}
-                                            >
-                                              {task.issueKey}
-                                            </a>
-                                            <span>{task.issueSummary}</span>
-                                          </span>
-                                          <span className="timelog-pc-task-eta">{task.eta ?? "—"}</span>
-                                          <span className="timelog-pc-task-logged">{secondsToHuman(task.loggedSeconds)}</span>
-                                          <span className="timelog-pc-task-date">{formatShortDate(task.lastLoggedAt.slice(0, 10))}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </details>
-                                ))}
-                              </div>
-                            )}
+                            {renderWeekGroups(member.weeklyGroups, jiraBaseUrl)}
                           </div>
                         </details>
                       );

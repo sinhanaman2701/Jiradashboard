@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { createPortal } from "react-dom";
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { AnacityLogo } from "@/components/AnacityLogo";
 import { DateFilterBar } from "@/components/DateFilterBar";
 import { SettingsShell } from "@/components/SettingsShell";
 import { SprintShell } from "@/components/SprintShell";
@@ -212,6 +214,27 @@ function HoursBar({ user }: { user: JiraUserSummary }) {
   );
 }
 
+function GoalsTooltip({
+  lines,
+  position,
+}: {
+  lines: string[];
+  position: { x: number; y: number } | null;
+}) {
+  if (!position || lines.length === 0 || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      className="dashboard-goals-tooltip"
+      style={{ left: position.x, top: position.y }}
+    >
+      {lines.map((line) => (
+        <div key={line}>{line}</div>
+      ))}
+    </div>,
+    document.body
+  );
+}
+
 function SummaryStrip({
   activeSprintCount,
   users,
@@ -222,37 +245,47 @@ function SummaryStrip({
   sprintGoals: SprintGoalsSummary | null;
 }) {
   const summary = summaryFromUsers(users);
+  const [tooltipPosition, setTooltipPosition] = useState<{ x: number; y: number } | null>(null);
 
-  const goalsTooltip = sprintGoals
+  const goalsTooltipLines = sprintGoals
     ? sprintGoals.byProject
         .map((p) => `${p.projectName}: ${p.achieved}/${p.total}`)
-        .join("\n")
-    : null;
+    : [];
 
   return (
-    <div className="summary-strip">
-      <div className="summary-card">
+    <>
+      <div className="summary-strip">
+        <div className="summary-card">
         <span className="summary-card-label">Members</span>
         <span className="summary-card-value">{summary.members}</span>
-      </div>
-      <div className="summary-card">
+        </div>
+        <div className="summary-card">
         <span className="summary-card-label">Active Sprints</span>
         <span className="summary-card-value">{activeSprintCount === null ? "—" : activeSprintCount}</span>
-      </div>
-      <div className="summary-card last">
+        </div>
+        <div className="summary-card last">
         <span className="summary-card-label">Sprint Goals Achieved</span>
         {sprintGoals === null ? (
           <span className="summary-card-value">—</span>
         ) : (
           <span
             className="summary-card-value summary-card-goals"
-            {...(goalsTooltip ? { "data-tooltip": goalsTooltip } : {})}
+            onMouseEnter={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setTooltipPosition({
+                x: rect.left + rect.width / 2,
+                y: rect.bottom + 12,
+              });
+            }}
+            onMouseLeave={() => setTooltipPosition(null)}
           >
             {sprintGoals.achieved}/{sprintGoals.total}
           </span>
         )}
+        </div>
       </div>
-    </div>
+      <GoalsTooltip lines={goalsTooltipLines} position={tooltipPosition} />
+    </>
   );
 }
 
@@ -469,15 +502,7 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
     <div className="dashboard-screen">
       <header className="topbar">
         <div className="topbar-brand">
-          <div className="logo-mark" aria-hidden="true">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-              <rect x="1" y="1" width="5" height="5" rx="1.2" fill="white" opacity="0.9" />
-              <rect x="8" y="1" width="5" height="5" rx="1.2" fill="white" opacity="0.6" />
-              <rect x="1" y="8" width="5" height="5" rx="1.2" fill="white" opacity="0.6" />
-              <rect x="8" y="8" width="5" height="5" rx="1.2" fill="white" opacity="0.3" />
-            </svg>
-          </div>
-          <span className="app-name">Worklog</span>
+          <AnacityLogo variant="header" />
           {data && <span className="mock-badge">{data.mode === "live" ? "LIVE" : "MOCK"}</span>}
         </div>
 
