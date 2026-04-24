@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createSession, isAdmin, SESSION_COOKIE, cookieOptions } from "@/lib/session";
+import { createSession, deriveAppRole, SESSION_COOKIE, cookieOptions } from "@/lib/session";
 
 interface TokenResponse {
   access_token: string;
@@ -56,8 +56,16 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const code = searchParams.get("code");
   const error = searchParams.get("error");
+  const errorDescription = searchParams.get("error_description");
 
-  if (error) return NextResponse.redirect(new URL(`/login?error=${error}`, req.url));
+  if (error) {
+    const loginUrl = new URL("/login", req.url);
+    loginUrl.searchParams.set("error", error);
+    if (errorDescription) {
+      loginUrl.searchParams.set("error_description", errorDescription);
+    }
+    return NextResponse.redirect(loginUrl);
+  }
   if (!code) return NextResponse.redirect(new URL("/login?error=no_code", req.url));
 
   try {
@@ -69,7 +77,7 @@ export async function GET(req: NextRequest) {
       fetchCloudId(tokens.access_token),
     ]);
     console.log("[callback] step 3: got user:", atlassianUser.account_id, atlassianUser.name, "cloudId:", cloudId);
-    const role = isAdmin(atlassianUser.account_id) ? "admin" : "user";
+    const role = await deriveAppRole(atlassianUser.account_id);
     console.log("[callback] step 4: role =", role);
 
     const sessionId = createSession(

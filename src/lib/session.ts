@@ -23,6 +23,14 @@ const sessionStore = g.__sessionStore;
 
 export const SESSION_COOKIE = "jd-sid";
 
+function isExtraAppAdmin(accountId: string): boolean {
+  const adminIds = (process.env.EXTRA_APP_ADMIN_ACCOUNT_IDS ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  return adminIds.includes(accountId);
+}
+
 export function createSession(user: SessionUser, accessToken: string, refreshToken: string): string {
   const sessionId = crypto.randomBytes(32).toString("hex");
   sessionStore.set(sessionId, { user, accessToken, refreshToken });
@@ -98,7 +106,57 @@ export async function refreshCurrentTokens(): Promise<{ accessToken: string; ref
   };
 }
 
-export function isAdmin(accountId: string): boolean {
-  const adminIds = (process.env.ADMIN_ACCOUNT_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean);
-  return adminIds.includes(accountId);
+function getRequiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required env var: ${name}`);
+  }
+  return value;
+}
+
+function jiraBaseUrl(): string {
+  return getRequiredEnv("JIRA_BASE_URL").replace(/\/$/, "");
+}
+
+function jiraAuthHeader(): string {
+  const email = getRequiredEnv("JIRA_EMAIL");
+  const token = getRequiredEnv("JIRA_API_TOKEN");
+  return `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}`;
+}
+
+async function hasJiraAdminPermission(accountId: string): Promise<boolean> {
+  const response = await fetch(`${jiraBaseUrl()}/rest/api/3/permissions/check`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      Authorization: jiraAuthHeader(),
+      "Content-Type": "application/json",
+    },
+    cache: "no-store",
+    body: JSON.stringify({
+      accountId,
+      globalPermissions: ["ADMINISTER"],
+    }),
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Failed Jira admin permission check: ${response.status} ${message}`);
+  }
+
+  const data = await response.json() as { globalPermissions?: string[] };
+  return Array.isArray(data.globalPermissions) && data.globalPermissions.includes("ADMINISTER");
+}
+
+export async function deriveAppRole(accountId: string): Promise<"admin" | "user"> {
+  try {
+    if (process.env.JIRA_BASE_URL && process.env.JIRA_EMAIL && process.env.JIRA_API_TOKEN) {
+      const jiraAdmin = await hasJiraAdminPermission(accountId);
+      if (jiraAdmin) return "admin";
+    }
+  } catch (error) {
+    console.warn("[session] Jira admin check failed:", error);
+  }
+
+  return isExtraAppAdmin(accountId) ? "admin" : "user";
 }

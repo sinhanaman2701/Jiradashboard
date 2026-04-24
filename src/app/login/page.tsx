@@ -5,7 +5,7 @@ import { getCurrentUser } from "@/lib/session";
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ error?: string }>;
+  searchParams?: Promise<{ error?: string; error_description?: string }>;
 }) {
   const user = await getCurrentUser();
   if (user) redirect(user.role === "admin" ? "/" : "/time-logging");
@@ -16,8 +16,13 @@ export default async function LoginPage({
     state_mismatch: "Session mismatch. Please try again.",
     auth_failed: "Authentication failed. Please try again.",
     access_denied: "Access was denied. Please allow the required permissions.",
+    unauthorized_client: "This Atlassian OAuth app is not allowed for this user yet. Check Distribution > Sharing or app ownership.",
+    invalid_scope: "The Atlassian OAuth app scopes are invalid or missing. Review the configured scopes in Developer Console.",
+    invalid_request: "The Atlassian OAuth request was rejected. Check the callback URL and app configuration.",
   };
-  const errorMessage = params.error ? (errorMessages[params.error] ?? "Something went wrong.") : null;
+  const errorMessage = params.error
+    ? `${errorMessages[params.error] ?? `OAuth error: ${params.error}`}${params.error_description ? ` (${params.error_description})` : ""}`
+    : null;
 
   return (
     <div className="login-screen">
