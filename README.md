@@ -90,10 +90,9 @@ The server-side aggregation layer lives in `src/lib/jira/dashboard.ts`.
 
 ## Run Locally
 
-1. Copy `.env.example` to `.env`
-2. Fill in Jira Cloud credentials
-3. Install dependencies
-4. Start the dev server
+1. Install dependencies
+2. Provide the deployment or local environment file separately
+3. Start the dev server
 
 ```bash
 npm install
@@ -143,19 +142,6 @@ Notes:
 - `npm run dev` runs the app on `127.0.0.1:3006`
 - `npm run start` also binds to `127.0.0.1:3006`, so hosting may need a process manager or command override if the server should listen on a different host or port
 - this app requires server-side hosting; it is not a static export
-
-## Environment Variables
-
-```env
-JIRA_BASE_URL=https://your-site.atlassian.net
-NEXT_PUBLIC_JIRA_BASE_URL=https://your-site.atlassian.net
-JIRA_EMAIL=your-atlassian-email@example.com
-JIRA_API_TOKEN=your-api-token
-ATLASSIAN_ORG_ID=your-atlassian-org-id
-NEXT_PUBLIC_ATLASSIAN_ORG_ID=your-atlassian-org-id
-```
-
-`ATLASSIAN_ORG_ID` is required for the Teams API. Find it in your Atlassian Admin console under `admin.atlassian.com`.
 
 ## Local Storage Keys
 
