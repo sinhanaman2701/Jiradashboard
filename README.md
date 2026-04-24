@@ -83,6 +83,11 @@ The server-side aggregation layer lives in `src/lib/jira/dashboard.ts`.
 - React 19
 - TypeScript
 
+## Runtime
+
+- Recommended Node.js: `22.x LTS`
+- Package manager: `npm`
+
 ## Run Locally
 
 1. Copy `.env.example` to `.env`
@@ -100,6 +105,44 @@ Default local URL:
 ```text
 http://127.0.0.1:3006
 ```
+
+## DevOps Commands
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run in development:
+
+```bash
+npm run dev
+```
+
+Build for production:
+
+```bash
+npm run build
+```
+
+Start the production server:
+
+```bash
+npm run start
+```
+
+Validation:
+
+```bash
+npm run typecheck
+```
+
+Notes:
+
+- `npm run dev` runs the app on `127.0.0.1:3006`
+- `npm run start` also binds to `127.0.0.1:3006`, so hosting may need a process manager or command override if the server should listen on a different host or port
+- this app requires server-side hosting; it is not a static export
 
 ## Environment Variables
 
