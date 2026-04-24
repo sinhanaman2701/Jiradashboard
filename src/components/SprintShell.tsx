@@ -35,6 +35,22 @@ function isGoalAchieved(statusName: string | undefined, sprintGoal: string): boo
   return statusIdx >= goalIdx;
 }
 
+function sprintProgressTone({
+  statusName,
+  sprintGoal,
+  sprintLoggedSeconds,
+}: {
+  statusName?: string;
+  sprintGoal: string;
+  sprintLoggedSeconds: number;
+}): "achieved" | "in-progress" | "not-started" {
+  if (sprintLoggedSeconds === 0) return "not-started";
+  if (isGoalAchieved(statusName, sprintGoal)) return "achieved";
+  const statusIdx = statusName ? progressionIndex(statusName) : -1;
+  if (statusIdx <= 0) return "not-started";
+  return "in-progress";
+}
+
 function StatusPill({ status }: { status?: string }) {
   if (!status) return <span className="sprint-status-pill sprint-status-empty">—</span>;
   const lower = status.toLowerCase();
@@ -139,6 +155,7 @@ function FloatingUserTooltip({
 
 type SprintIssueAggregate = {
   etaSeconds: number;
+  etaLastChangedAt?: string;
   previousLoggedSeconds: number;
   previousLoggedHours: number;
   sprintLoggedSeconds: number;
@@ -197,8 +214,13 @@ function aggregateChildIssues(children: SprintIssue[]): SprintIssueAggregate {
   const etaSeconds = children.reduce((sum, child) => sum + (parseTimeToSeconds(child.eta) ?? 0), 0);
   const previousLoggedSeconds = children.reduce((sum, child) => sum + child.previousLoggedSeconds, 0);
   const sprintLoggedSeconds = children.reduce((sum, child) => sum + child.sprintLoggedSeconds, 0);
+  const etaLastChangedAt = children
+    .map((child) => child.etaLastChangedAt)
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0];
   return {
     etaSeconds,
+    etaLastChangedAt,
     previousLoggedSeconds,
     previousLoggedHours: Math.round((previousLoggedSeconds / 3600) * 100) / 100,
     sprintLoggedSeconds,
@@ -259,7 +281,23 @@ function VarianceFromSeconds({
   </span>;
 }
 
-function SprintOverview({ issues }: { issues: SprintIssue[] }) {
+function formatEtaChangedAt(value?: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+function SprintOverview({
+  issues,
+}: {
+  issues: SprintIssue[];
+}) {
   const goalsMet = issues.filter((i) => isGoalAchieved(i.statusName, i.sprintGoal)).length;
   const goalsSet = issues.filter((i) => i.sprintGoal).length;
   const totalLoggedSeconds = issues.reduce((sum, i) => sum + i.sprintLoggedSeconds, 0);
@@ -548,10 +586,16 @@ export function SprintShell() {
   function renderIssueRow(issue: SprintIssue, result: SprintResult, options?: { child?: boolean }) {
     const cellKey = `${result.sprintId}-${issue.key}`;
     const noLogs = issue.sprintLoggedHours === 0;
+    const tone = sprintProgressTone({
+      statusName: issue.statusName,
+      sprintGoal: issue.sprintGoal,
+      sprintLoggedSeconds: issue.sprintLoggedSeconds,
+    });
     const rowClass = [
       "sprint-issue-row",
       options?.child ? "sprint-issue-row--child" : "",
       noLogs ? "sprint-issue-row--no-logs" : "",
+      `sprint-issue-row--${tone}`,
     ].filter(Boolean).join(" ");
 
     return (
@@ -580,7 +624,16 @@ export function SprintShell() {
           ) : "No sprint goal"}
         </span>
 
-        <span className="sprint-eta-cell">{issue.eta || "No ETA"}</span>
+        <div className="sprint-status-cell">
+          <StatusPill status={issue.statusName} />
+        </div>
+
+        <span className="sprint-eta-cell">
+          <span className="sprint-eta-value">{issue.eta || "No ETA"}</span>
+          {formatEtaChangedAt(issue.etaLastChangedAt) && (
+            <span className="sprint-eta-meta">ETA changed {formatEtaChangedAt(issue.etaLastChangedAt)}</span>
+          )}
+        </span>
 
         <div
           className="sprint-time-cell-wrap"
@@ -609,10 +662,6 @@ export function SprintShell() {
           previousLoggedSeconds={issue.previousLoggedSeconds}
           sprintLoggedSeconds={issue.sprintLoggedSeconds}
         />
-
-        <div className="sprint-status-cell">
-          <StatusPill status={issue.statusName} />
-        </div>
       </div>
     );
   }
@@ -622,10 +671,16 @@ export function SprintShell() {
     const expanded = expandedStoryKeys.has(storyKey);
     const achieved = row.children.filter((child) => isGoalAchieved(child.statusName, child.sprintGoal)).length;
     const noLogs = row.aggregate.sprintLoggedHours === 0;
+    const tone = achieved === row.children.length && row.children.length > 0
+      ? "achieved"
+      : row.aggregate.sprintLoggedSeconds === 0
+        ? "not-started"
+        : "in-progress";
     const rowClass = [
       "sprint-issue-row",
       "sprint-issue-row--story",
       noLogs ? "sprint-issue-row--no-logs" : "",
+      `sprint-issue-row--${tone}`,
     ].filter(Boolean).join(" ");
 
     return (
@@ -662,8 +717,17 @@ export function SprintShell() {
           {achieved}/{row.children.length} sprint goal achieved
         </span>
 
+        <div className="sprint-status-cell">
+          <StatusPill status={row.issue.statusName} />
+        </div>
+
         <span className="sprint-eta-cell">
-          {row.aggregate.etaSeconds ? formatHours(row.aggregate.etaSeconds / 3600) : "No ETA"}
+          <span className="sprint-eta-value">
+            {row.aggregate.etaSeconds ? formatHours(row.aggregate.etaSeconds / 3600) : "No ETA"}
+          </span>
+          {formatEtaChangedAt(row.aggregate.etaLastChangedAt) && (
+            <span className="sprint-eta-meta">ETA changed {formatEtaChangedAt(row.aggregate.etaLastChangedAt)}</span>
+          )}
         </span>
 
         <div
@@ -693,10 +757,6 @@ export function SprintShell() {
           previousLoggedSeconds={row.aggregate.previousLoggedSeconds}
           sprintLoggedSeconds={row.aggregate.sprintLoggedSeconds}
         />
-
-        <div className="sprint-status-cell">
-          <StatusPill status={row.issue.statusName} />
-        </div>
       </div>
     );
   }
@@ -788,7 +848,7 @@ export function SprintShell() {
               </div>
 
               {result.issues.length > 0 && (
-                <SprintOverview issues={result.issues} />
+              <SprintOverview issues={result.issues} />
               )}
 
               {result.issues.length === 0 ? (
@@ -798,11 +858,11 @@ export function SprintShell() {
                   <div className="sprint-issue-head">
                     <span>Task</span>
                     <span>Sprint Goal</span>
+                    <span>Status</span>
                     <span>Original ETA</span>
                     <span>Logged Till Now</span>
                     <span>Logged This Sprint</span>
                     <span>Variance</span>
-                    <span>Status</span>
                   </div>
 
                   {buildSprintRows(result.issues).map((row) => {

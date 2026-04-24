@@ -73,6 +73,46 @@ function toHours(seconds: number): number {
   return Math.round((seconds / 3600) * 100) / 100;
 }
 
+function matchesEtaChange(
+  item: { field?: string; fieldId?: string },
+  etaFieldId: string
+): boolean {
+  if (item.fieldId === etaFieldId) return true;
+  const field = (item.field ?? "").trim().toLowerCase();
+  return field === "eta" || field === "original estimate";
+}
+
+async function fetchEtaLastChangedAt(issueKey: string, etaFieldId: string): Promise<string | undefined> {
+  let startAt = 0;
+  let latest: string | undefined;
+
+  while (true) {
+    const page = await jiraFetch<{
+      values?: Array<{
+        created?: string;
+        items?: Array<{ field?: string; fieldId?: string }>;
+      }>;
+      maxResults?: number;
+      startAt?: number;
+      total?: number;
+    }>(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/changelog?startAt=${startAt}&maxResults=${PAGE_SIZE}`);
+
+    for (const history of page.values ?? []) {
+      const changedEta = (history.items ?? []).some((item) => matchesEtaChange(item, etaFieldId));
+      if (!changedEta || !history.created) continue;
+      if (!latest || Date.parse(history.created) > Date.parse(latest)) {
+        latest = history.created;
+      }
+    }
+
+    const next = (page.startAt ?? 0) + (page.maxResults ?? PAGE_SIZE);
+    if (next >= (page.total ?? 0) || (page.values ?? []).length === 0) break;
+    startAt = next;
+  }
+
+  return latest;
+}
+
 export async function fetchAllProjects(): Promise<SprintProject[]> {
   const projects: SprintProject[] = [];
   let startAt = 0;
@@ -375,6 +415,10 @@ export async function fetchSprintIssues(
     issues.map((issue) => () => fetchRawWorklogs(issue.key)),
     10
   );
+  const etaLastChangedDates = await runConcurrent(
+    issues.map((issue) => () => fetchEtaLastChangedAt(issue.key, etaFieldId)),
+    8
+  );
 
   return issues.map((issue, idx) => {
     const all = worklogs[idx] ?? [];
@@ -418,6 +462,7 @@ export async function fetchSprintIssues(
       assigneeDisplayName: issue.assigneeDisplayName,
       statusName: issue.statusName,
       eta: issue.eta,
+      etaLastChangedAt: etaLastChangedDates[idx],
       sprintGoal: issue.sprintGoal,
       previousLoggedSeconds,
       previousLoggedHours: toHours(previousLoggedSeconds),

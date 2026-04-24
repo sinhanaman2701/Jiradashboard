@@ -1738,6 +1738,23 @@ a {
   font-size: 13px;
 }
 
+.timelog-admin-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-top: 12px;
+}
+
+.timelog-admin-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .timelog-admin-list {
   display: flex;
   flex-direction: column;
@@ -1803,8 +1820,16 @@ a {
   opacity: 1;
 }
 
-.timelog-day-dot.logged {
+.timelog-day-dot.target {
   background: #16a34a;
+}
+
+.timelog-day-dot.under {
+  background: #f59e0b;
+}
+
+.timelog-day-dot.over {
+  background: #2563eb;
 }
 
 .timelog-day-dot.missing {
@@ -1840,14 +1865,18 @@ a {
   color: var(--text);
 }
 
-.timelog-weekly-sep {
-  color: var(--muted);
-  font-weight: 400;
+.timelog-weekly-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
 }
 
-.timelog-weekly-target {
+.timelog-weekly-label {
   color: var(--muted);
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 
 .timelog-admin-toggle {
@@ -2508,10 +2537,17 @@ a {
 .sprint-issue-head,
 .sprint-issue-row {
   display: grid;
-  grid-template-columns: minmax(280px, 2.2fr) minmax(150px, 1fr) 105px 125px 145px 95px 110px;
-  gap: 14px;
+  grid-template-columns:
+    minmax(300px, 2.8fr)
+    minmax(150px, 1.35fr)
+    minmax(92px, 0.8fr)
+    minmax(88px, 0.7fr)
+    minmax(108px, 0.85fr)
+    minmax(124px, 0.95fr)
+    minmax(86px, 0.72fr);
+  gap: 12px;
   align-items: center;
-  min-width: 1010px;
+  min-width: 1020px;
 }
 
 .sprint-issue-head {
@@ -2529,6 +2565,16 @@ a {
   padding: 14px 20px;
   border-bottom: 1px solid var(--border-soft);
   font-size: 13px;
+}
+
+.sprint-issue-name-cell {
+  position: relative;
+  min-width: 0;
+}
+
+.sprint-issue-row--achieved {
+  background: #f0fdf4;
+  box-shadow: inset 4px 0 0 #22c55e;
 }
 
 .sprint-issue-row:last-child {
@@ -2651,7 +2697,6 @@ a {
 }
 
 .sprint-issue-row--child .sprint-issue-name-cell {
-  position: relative;
   padding-left: 30px;
 }
 
@@ -2761,8 +2806,22 @@ a {
 
 /* ETA cell */
 .sprint-eta-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted-mid);
+}
+
+.sprint-eta-value {
   color: var(--muted-mid);
   font-weight: 600;
+}
+
+.sprint-eta-meta {
+  color: var(--muted-light);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.3;
 }
 
 /* No logs row */

@@ -90,6 +90,29 @@ function formatWeekRange(from: string, to: string): string {
   return `${formatShortDate(from)} - ${formatShortDate(to)}`;
 }
 
+function weeklyHoursLabel(seconds: number): string {
+  return `${secondsToHuman(seconds)}/40hrs`;
+}
+
+function adminDayDotClass(day: AdminTimeLogOverview["users"][number]["days"][number]): string {
+  if (day.isWeekend) return "weekend";
+  if (day.isUpcoming) return "upcoming";
+  if (day.loggedSeconds === 0) return "missing";
+  if (day.loggedSeconds === 8 * 3600) return "target";
+  if (day.loggedSeconds < 8 * 3600) return "under";
+  return "over";
+}
+
+function adminDayTooltip(day: AdminTimeLogOverview["users"][number]["days"][number]): string {
+  const label = `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)}`;
+  if (day.isWeekend) return `${label} · Weekly off`;
+  if (day.isUpcoming) return `${label} · Upcoming`;
+  if (day.loggedSeconds === 0) return `${label} · No logs`;
+  if (day.loggedSeconds === 8 * 3600) return `${label} · 8h logged`;
+  if (day.loggedSeconds < 8 * 3600) return `${label} · ${day.loggedHours}h logged (less than 8h)`;
+  return `${label} · ${day.loggedHours}h logged (more than 8h)`;
+}
+
 function issueTypeBadge(type: string) {
   const lower = type.toLowerCase();
   let bg = "#dbeafe", color = "#1d4ed8", label = type;
@@ -175,7 +198,7 @@ function renderWeekGroups(weeks: AdminTimeLogWeek[], jiraBaseUrl?: string) {
               <span className="timelog-week-label">{week.label}</span>
               <span className="timelog-week-range">{formatWeekRange(week.from, week.to)}</span>
             </span>
-            <span className="timelog-week-hours">{secondsToHuman(week.totalLoggedSeconds)}</span>
+            <span className="timelog-week-hours">{weeklyHoursLabel(week.totalLoggedSeconds)}</span>
             <span className="timelog-admin-toggle">View logs</span>
           </summary>
           <div className="timelog-week-body">
@@ -435,12 +458,18 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
             {user.role === "admin" && (
               <div className="timelog-admin-section">
                 <div className="section-row" style={{ marginBottom: 12 }}>
-                    <div>
-                      <div className="section-label">Team Time Logging</div>
-                      <p className="timelog-admin-sub">
+                  <div>
+                    <div className="section-label">Team Time Logging</div>
+                    <p className="timelog-admin-sub">
                       This week logging activity · 40h weekly target (Mon–Fri)
-                      </p>
+                    </p>
+                    <div className="timelog-admin-legend" aria-label="Logging status legend">
+                      <span className="timelog-admin-legend-item"><span className="timelog-day-dot target" />8h logged</span>
+                      <span className="timelog-admin-legend-item"><span className="timelog-day-dot under" />Less than 8h</span>
+                      <span className="timelog-admin-legend-item"><span className="timelog-day-dot over" />More than 8h</span>
+                      <span className="timelog-admin-legend-item"><span className="timelog-day-dot missing" />No logs</span>
                     </div>
+                  </div>
                   {!adminOverviewLoading && adminOverview && (
                     <span className="section-status success">{adminOverview.users.length} users</span>
                   )}
@@ -470,24 +499,19 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                               <span className="member-subtitle">This week</span>
                             </span>
 
-                            <span className="timelog-weekly-chip">
-                              <span className="timelog-weekly-hours">{whours}</span>
-                              <span className="timelog-weekly-sep">/</span>
-                              <span className="timelog-weekly-target">40h</span>
+                            <span className="timelog-weekly-stack">
+                              <span className="timelog-weekly-chip">
+                                <span className="timelog-weekly-hours">{weeklyHoursLabel(member.weeklyLoggedSeconds)}</span>
+                              </span>
+                              <span className="timelog-weekly-label">Current week</span>
                             </span>
 
                             <span className="timelog-admin-overs" aria-label="This week logging status">
                               {member.days.map((day) => (
                                 <span
                                   key={day.date}
-                                  className={`timelog-day-dot ${day.isWeekend ? "weekend" : day.isUpcoming ? "upcoming" : day.hasLogged ? "logged" : "missing"}`}
-                                  data-tooltip={
-                                    day.isWeekend
-                                      ? `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)} · Weekly off`
-                                      : day.isUpcoming
-                                        ? `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)} · Upcoming`
-                                        : `${dayOfWeekShort(day.date)} ${formatShortDate(day.date)} · ${day.hasLogged ? `${day.loggedHours}h logged` : "No logs"}`
-                                  }
+                                  className={`timelog-day-dot ${adminDayDotClass(day)}`}
+                                  data-tooltip={adminDayTooltip(day)}
                                 />
                               ))}
                             </span>

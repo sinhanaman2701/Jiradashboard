@@ -38,6 +38,7 @@ export interface SprintIssue {
   assigneeDisplayName?: string;
   statusName?: string;
   eta: string;
+  etaLastChangedAt?: string;
   sprintGoal: string; // value from Sprint Goal select field, e.g. "In Progress"
   previousLoggedSeconds: number;
   previousLoggedHours: number;
