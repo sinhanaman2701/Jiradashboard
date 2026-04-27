@@ -90,7 +90,11 @@ export function SettingsShell({ users }: { users: JiraUser[] }) {
           </div>
 
           {teamsLoading ? (
-            <div className="settings-empty-note" style={{ padding: "16px 0" }}>Loading teams…</div>
+            <div className="team-chip-row" style={{ padding: "12px 0" }}>
+              {[100, 80, 120, 90, 70].map((w, i) => (
+                <div key={i} className="sk" style={{ width: w, height: 30, borderRadius: 16, display: "inline-block" }} />
+              ))}
+            </div>
           ) : teams.length > 0 ? (
             <div className="team-chip-row">
               {teams.map((team) => (
@@ -118,31 +122,44 @@ export function SettingsShell({ users }: { users: JiraUser[] }) {
           </div>
 
           <div className="settings-user-list">
-            {filteredUsers.map((user) => {
-              const userTeams = teams.filter((team) => team.members.includes(user.accountId));
-              return (
-                <div key={user.accountId} className="settings-user-card">
-                  <div className="settings-user-avatar" style={{ background: avatarColor(user.accountId) }}>
-                    {initials(user.displayName)}
-                  </div>
-                  <div className="settings-user-content">
-                    <div className="settings-user-name">{user.displayName}</div>
-                    <div className="settings-user-email">
-                      {user.emailAddress ?? `${user.accountId}@jira.local`}
-                    </div>
-                    <div className="settings-user-team-row">
-                      {userTeams.length === 0 ? (
-                        <span className="settings-empty-note">No teams assigned</span>
-                      ) : (
-                        userTeams.map((team) => (
-                          <TeamTag key={team.id} name={team.name} color={team.color} />
-                        ))
-                      )}
-                    </div>
+            {teamsLoading ? (
+              [0, 1, 2, 3, 4].map((i) => (
+                <div key={i} className="settings-user-card" style={{ opacity: 0.6, pointerEvents: "none" }}>
+                  <div className="sk sk-round" style={{ width: 40, height: 40, flexShrink: 0 }} />
+                  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 7 }}>
+                    <div className="sk" style={{ width: 140, height: 13 }} />
+                    <div className="sk" style={{ width: 180, height: 11 }} />
+                    <div className="sk" style={{ width: 80, height: 20, borderRadius: 10 }} />
                   </div>
                 </div>
-              );
-            })}
+              ))
+            ) : (
+              filteredUsers.map((user) => {
+                const userTeams = teams.filter((team) => team.members.includes(user.accountId));
+                return (
+                  <div key={user.accountId} className="settings-user-card">
+                    <div className="settings-user-avatar" style={{ background: avatarColor(user.accountId) }}>
+                      {initials(user.displayName)}
+                    </div>
+                    <div className="settings-user-content">
+                      <div className="settings-user-name">{user.displayName}</div>
+                      <div className="settings-user-email">
+                        {user.emailAddress ?? `${user.accountId}@jira.local`}
+                      </div>
+                      <div className="settings-user-team-row">
+                        {userTeams.length === 0 ? (
+                          <span className="settings-empty-note">No teams assigned</span>
+                        ) : (
+                          userTeams.map((team) => (
+                            <TeamTag key={team.id} name={team.name} color={team.color} />
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </main>
   );

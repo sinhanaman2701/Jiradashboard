@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { AnacityLogo } from "@/components/AnacityLogo";
-import { parseTimeToSeconds, secondsToHuman } from "@/lib/time-parser";
+import { secondsToHuman } from "@/lib/time-parser";
 import { avatarColor, initials } from "@/lib/teams";
-import type { JiraIssueOption, WorklogEntry } from "@/lib/jira/timelog";
+import type { JiraIssueOption } from "@/lib/jira/timelog";
 import type { AdminTimeLogOverview, AdminTimeLogWeek, ProductClientGroup } from "@/lib/jira/timelog-admin";
 
 interface SessionUser {
@@ -18,28 +18,39 @@ interface SessionUser {
 }
 
 interface WorklogHistoryResponse {
-  entries: WorklogEntry[];
-  page: number;
-  pageSize: number;
   total: number;
-  totalPages: number;
+  summaries?: {
+    thisMonth: {
+      label: string;
+      from: string;
+      to: string;
+      totalLoggedSeconds: number;
+      tasks: {
+        issueKey: string;
+        issueSummary: string;
+        projectKey: string;
+        totalLoggedSeconds: number;
+        lastWorkedAt: string;
+      }[];
+    };
+    previousMonth: {
+      label: string;
+      from: string;
+      to: string;
+      totalLoggedSeconds: number;
+      tasks: {
+        issueKey: string;
+        issueSummary: string;
+        projectKey: string;
+        totalLoggedSeconds: number;
+        lastWorkedAt: string;
+      }[];
+    };
+  };
 }
 
 function formatRecentLogDate(started: string): string {
   return `Last logged ${formatShortDate(started.slice(0, 10))}`;
-}
-
-function formatDate(started: string): string {
-  const [year, month, day] = started.slice(0, 10).split("-").map(Number);
-  if (!year || !month || !day) return started;
-
-  const utcDate = new Date(Date.UTC(year, month - 1, day));
-  return new Intl.DateTimeFormat("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(utcDate);
 }
 
 function todayIST(): string {
@@ -90,8 +101,72 @@ function formatWeekRange(from: string, to: string): string {
   return `${formatShortDate(from)} - ${formatShortDate(to)}`;
 }
 
+function formatPeriodRange(from: string, to: string): string {
+  return `${formatShortDate(from)} - ${formatShortDate(to)}`;
+}
+
 function weeklyHoursLabel(seconds: number): string {
   return `${secondsToHuman(seconds)}/40hrs`;
+}
+
+function periodHoursLabel(period: AdminTimeLogWeek, seconds: number): string {
+  return period.hoursLabelMode === "weekly-target"
+    ? weeklyHoursLabel(seconds)
+    : secondsToHuman(seconds);
+}
+
+function renderPersonalMonthCard(
+  summary: NonNullable<WorklogHistoryResponse["summaries"]>["thisMonth"] | NonNullable<WorklogHistoryResponse["summaries"]>["previousMonth"],
+  jiraBaseUrl: string
+) {
+  return (
+    <details className="timelog-month-summary-card" key={summary.label}>
+      <summary className="timelog-month-summary-head">
+        <span className="timelog-month-summary-top">
+          <span className="timelog-month-summary-label">{summary.label}</span>
+          <span className="timelog-month-summary-range">{formatPeriodRange(summary.from, summary.to)}</span>
+        </span>
+        <span className="timelog-month-summary-main">
+          <strong className="timelog-month-summary-hours">{secondsToHuman(summary.totalLoggedSeconds)}</strong>
+        </span>
+        <span className="timelog-admin-toggle">
+          {summary.tasks.length} task{summary.tasks.length === 1 ? "" : "s"}
+        </span>
+      </summary>
+      <div className="timelog-month-task-list">
+        {summary.tasks.length === 0 ? (
+          <div className="timelog-month-task-empty">No tasks worked in this period.</div>
+        ) : (
+          <>
+            <div className="timelog-month-task-head">
+              <span>Task</span>
+              <span>Project</span>
+              <span>Logged</span>
+              <span>Last worked</span>
+            </div>
+            {summary.tasks.map((task) => (
+              <div key={task.issueKey} className="timelog-month-task-row">
+                <span className="timelog-month-task-name">
+                  <a
+                    className="ticket-link"
+                    href={jiraBaseUrl ? `${jiraBaseUrl}/browse/${task.issueKey}` : "#"}
+                    target={jiraBaseUrl ? "_blank" : undefined}
+                    rel={jiraBaseUrl ? "noreferrer" : undefined}
+                  >
+                    {task.issueSummary}
+                  </a>
+                  <span className="task-key">{task.issueKey}</span>
+                </span>
+                <span className="timelog-month-task-project">{task.projectKey}</span>
+                <span className="timelog-month-task-logged">{secondsToHuman(task.totalLoggedSeconds)}</span>
+                <span className="timelog-month-task-date">{formatShortDate(task.lastWorkedAt.slice(0, 10))}</span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </details>
+  );
 }
 
 function adminDayDotClass(day: AdminTimeLogOverview["users"][number]["days"][number]): string {
@@ -138,12 +213,18 @@ function sortIssuesByLatestLog(issues: JiraIssueOption[]): JiraIssueOption[] {
   });
 }
 
+function extractDownloadFilename(header: string | null): string {
+  if (!header) return `team-time-logging-report.xlsx`;
+  const match = /filename="([^"]+)"/.exec(header);
+  return match?.[1] ?? "team-time-logging-report.xlsx";
+}
+
 function renderProductClientGroups(
   groups: ProductClientGroup[],
   jiraBaseUrl?: string
 ) {
   if (groups.length === 0) {
-    return <div className="timelog-admin-empty">No worklogs in this week.</div>;
+    return <div className="timelog-admin-empty">No worklogs in this period.</div>;
   }
 
   return (
@@ -188,30 +269,97 @@ function renderProductClientGroups(
   );
 }
 
-function renderWeekGroups(weeks: AdminTimeLogWeek[], jiraBaseUrl?: string) {
+function WeekCard({
+  week,
+  accountId,
+  jiraBaseUrl,
+  weekLoading,
+  weekData,
+  onLoad,
+}: {
+  week: AdminTimeLogWeek;
+  accountId: string;
+  jiraBaseUrl?: string;
+  weekLoading: Record<string, boolean>;
+  weekData: Record<string, { totalLoggedSeconds: number; productClientGroups: ProductClientGroup[] }>;
+  onLoad: (accountId: string, weekKey: string, from: string, to: string, endTimestamp?: string) => void;
+}) {
+  const key = `${accountId}:${week.key}`;
+  const lazy = !week.loaded;
+  const isLoading = lazy && Boolean(weekLoading[key]);
+  const loaded = weekData[key];
+  const groups = lazy ? (loaded?.productClientGroups ?? []) : week.productClientGroups;
+  const totalSeconds = lazy ? (loaded?.totalLoggedSeconds ?? 0) : week.totalLoggedSeconds;
+
+  return (
+    <details
+      key={week.key}
+      className="timelog-week-card"
+      open={week.key === "this-week"}
+      onToggle={(e) => {
+        if ((e.currentTarget as HTMLDetailsElement).open && lazy && !loaded && !weekLoading[key]) {
+          onLoad(accountId, week.key, week.from, week.to, week.toTimestamp);
+        }
+      }}
+    >
+      <summary className="timelog-week-summary">
+        <span className="timelog-week-label-wrap">
+          <span className="timelog-week-label">{week.label}</span>
+          <span className="timelog-week-range">{formatWeekRange(week.from, week.to)}</span>
+        </span>
+        <span className="timelog-week-hours">
+          {lazy && !loaded ? (isLoading ? "Loading…" : "—") : periodHoursLabel(week, totalSeconds)}
+        </span>
+        <span className="timelog-admin-toggle">View logs</span>
+      </summary>
+      <div className="timelog-week-body">
+        {isLoading ? (
+          <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div className="sk" style={{ width: 140, height: 12 }} />
+                <div className="sk" style={{ width: 50, height: 12 }} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          renderProductClientGroups(groups, jiraBaseUrl)
+        )}
+      </div>
+    </details>
+  );
+}
+
+function renderWeekGroups(
+  weeks: AdminTimeLogWeek[],
+  accountId: string,
+  jiraBaseUrl: string | undefined,
+  weekLoading: Record<string, boolean>,
+  weekData: Record<string, { totalLoggedSeconds: number; productClientGroups: ProductClientGroup[] }>,
+  onLoad: (accountId: string, weekKey: string, from: string, to: string, endTimestamp?: string) => void
+) {
   return (
     <div className="timelog-week-groups">
       {weeks.map((week) => (
-        <details key={week.key} className="timelog-week-card" open={week.key === "this-week"}>
-          <summary className="timelog-week-summary">
-            <span className="timelog-week-label-wrap">
-              <span className="timelog-week-label">{week.label}</span>
-              <span className="timelog-week-range">{formatWeekRange(week.from, week.to)}</span>
-            </span>
-            <span className="timelog-week-hours">{weeklyHoursLabel(week.totalLoggedSeconds)}</span>
-            <span className="timelog-admin-toggle">View logs</span>
-          </summary>
-          <div className="timelog-week-body">
-            {renderProductClientGroups(week.productClientGroups, jiraBaseUrl)}
-          </div>
-        </details>
+        <WeekCard
+          key={week.key}
+          week={week}
+          accountId={accountId}
+          jiraBaseUrl={jiraBaseUrl}
+          weekLoading={weekLoading}
+          weekData={weekData}
+          onLoad={onLoad}
+        />
       ))}
     </div>
   );
 }
 
-export function TimeLogShell({ user }: { user: SessionUser }) {
+export function TimeLogShell({ user, view }: { user: SessionUser; view: "team" | "my" }) {
   const router = useRouter();
+  const showTeamView = user.role === "admin" && view === "team";
+  const showMyView = user.role !== "admin" || view === "my";
+  const [timeLoggingMenuOpen, setTimeLoggingMenuOpen] = useState(user.role === "admin");
 
   // Form state
   const [issueQuery, setIssueQuery] = useState("");
@@ -220,7 +368,8 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
   const [selectedIssue, setSelectedIssue] = useState<JiraIssueOption | null>(null);
   const [visibleTaskCount, setVisibleTaskCount] = useState(10);
   const [issueRefreshVersion, setIssueRefreshVersion] = useState(0);
-  const [timeInput, setTimeInput] = useState("");
+  const [timeHours, setTimeHours] = useState(0);
+  const [timeMinutes, setTimeMinutes] = useState(0);
   const [timeError, setTimeError] = useState("");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -228,40 +377,39 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
   const [submitSuccess, setSubmitSuccess] = useState(false);
 
   // History state
-  const [history, setHistory] = useState<WorklogEntry[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(user.role !== "admin");
-  const [historyPage, setHistoryPage] = useState(1);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const [historyTotal, setHistoryTotal] = useState(0);
-  const [historyTotalPages, setHistoryTotalPages] = useState(1);
+  const [historySummaries, setHistorySummaries] = useState<WorklogHistoryResponse["summaries"] | null>(null);
   const [adminOverview, setAdminOverview] = useState<AdminTimeLogOverview | null>(null);
   const [adminOverviewLoading, setAdminOverviewLoading] = useState(user.role === "admin");
+  const [reportDownloading, setReportDownloading] = useState(false);
+  const [reportError, setReportError] = useState("");
+
+  const [weekLoading, setWeekLoading] = useState<Record<string, boolean>>({});
+  const [weekData, setWeekData] = useState<Record<string, { totalLoggedSeconds: number; productClientGroups: ProductClientGroup[] }>>({});
 
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const issueSearchAbortRef = useRef<AbortController | null>(null);
 
-  const loadHistory = useCallback((page: number) => {
+  const loadHistory = useCallback(() => {
     setHistoryLoading(true);
-    fetch(`/api/timelog/history?page=${page}`)
+    fetch(`/api/timelog/history`)
       .then((r) => r.json())
       .then((data: WorklogHistoryResponse) => {
-        setHistory(Array.isArray(data.entries) ? data.entries : []);
-        setHistoryPage(data.page ?? page);
         setHistoryTotal(data.total ?? 0);
-        setHistoryTotalPages(data.totalPages ?? 1);
+        setHistorySummaries(data.summaries ?? null);
       })
       .catch(() => {
-        setHistory([]);
-        setHistoryPage(page);
         setHistoryTotal(0);
-        setHistoryTotalPages(1);
+        setHistorySummaries(null);
       })
       .finally(() => setHistoryLoading(false));
   }, []);
 
   useEffect(() => {
-    if (user.role === "admin") return;
-    loadHistory(1);
-  }, [loadHistory, user.role]);
+    if (!showMyView) return;
+    loadHistory();
+  }, [loadHistory, showMyView]);
 
   const loadAdminOverview = useCallback(() => {
     if (user.role !== "admin") return;
@@ -278,12 +426,32 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
     loadAdminOverview();
   }, [loadAdminOverview]);
 
+  const loadWeekData = useCallback((accountId: string, weekKey: string, from: string, to: string, endTimestamp?: string) => {
+    const key = `${accountId}:${weekKey}`;
+    setWeekLoading((prev) => ({ ...prev, [key]: true }));
+    const params = new URLSearchParams({ accountId, from, to });
+    if (endTimestamp) params.set("endTimestamp", endTimestamp);
+
+    fetch(`/api/timelog/admin-week?${params.toString()}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && typeof data.totalLoggedSeconds === "number") {
+          setWeekData((prev) => ({ ...prev, [key]: data }));
+        }
+      })
+      .finally(() => setWeekLoading((prev) => ({ ...prev, [key]: false })));
+  }, []);
+
   // Debounced issue search
   useEffect(() => {
-    if (user.role === "admin") {
+    if (!showMyView) {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+      issueSearchAbortRef.current?.abort();
       setIssueResults([]);
+      setIssueLoading(false);
       return;
     }
+
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     issueSearchAbortRef.current?.abort();
     searchDebounceRef.current = setTimeout(() => {
@@ -310,7 +478,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
       if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
       issueSearchAbortRef.current?.abort();
     };
-  }, [issueQuery, issueRefreshVersion, user.role]);
+  }, [issueQuery, issueRefreshVersion, showMyView]);
 
   useEffect(() => {
     setVisibleTaskCount(10);
@@ -321,14 +489,42 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
     router.push("/login");
   }
 
+  async function handleDownloadAdminReport() {
+    if (reportDownloading) return;
+    setReportError("");
+    setReportDownloading(true);
+
+    try {
+      const res = await fetch("/api/timelog/admin-report");
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error ?? "Failed to generate report.");
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = extractDownloadFilename(res.headers.get("content-disposition"));
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : "Failed to generate report.");
+    } finally {
+      setReportDownloading(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitError("");
     setSubmitSuccess(false);
 
-    const seconds = parseTimeToSeconds(timeInput.trim());
-    if (!seconds) {
-      setTimeError("Enter a valid time like 2h, 30m, or 2h 30m");
+    const seconds = timeHours * 3600 + timeMinutes * 60;
+    if (seconds <= 0) {
+      setTimeError("Enter at least 1 minute");
       return;
     }
     setTimeError("");
@@ -366,10 +562,11 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
         setSubmitSuccess(true);
         setSelectedIssue(null);
         setIssueQuery("");
-        setTimeInput("");
+        setTimeHours(0);
+        setTimeMinutes(0);
         setDescription("");
         setIssueRefreshVersion((current) => current + 1);
-        loadHistory(1);
+        loadHistory();
         loadAdminOverview();
       }
     } catch {
@@ -379,7 +576,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
     }
   }
 
-  const canSubmit = Boolean(selectedIssue && timeInput.trim() && !submitting);
+  const canSubmit = Boolean(selectedIssue && (timeHours > 0 || timeMinutes > 0) && !submitting);
   const visibleTasks = issueResults.slice(0, visibleTaskCount);
   const jiraBaseUrl = process.env.NEXT_PUBLIC_JIRA_BASE_URL ?? "";
 
@@ -433,13 +630,53 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
               </Link>
             </>
           )}
-          <Link href="/time-logging" className="home-nav-item active">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10" />
-              <polyline points="12 6 12 12 16 14" />
-            </svg>
-            Time Logging
-          </Link>
+          {user.role === "admin" ? (
+            <>
+              <button
+                type="button"
+                className="home-nav-item home-nav-parent active"
+                aria-expanded={timeLoggingMenuOpen}
+                onClick={() => setTimeLoggingMenuOpen((current) => !current)}
+              >
+                <span className="home-nav-parent-main">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="12 6 12 12 16 14" />
+                  </svg>
+                  Time Logging
+                </span>
+                <span className={`home-nav-caret ${timeLoggingMenuOpen ? "open" : ""}`} aria-hidden="true">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </span>
+              </button>
+              {timeLoggingMenuOpen && (
+                <>
+                  <Link
+                    href="/time-logging?view=team"
+                    className={`home-nav-item home-nav-subitem ${view === "team" ? "active" : ""}`}
+                  >
+                    Team Time Logging
+                  </Link>
+                  <Link
+                    href="/time-logging?view=my"
+                    className={`home-nav-item home-nav-subitem ${view === "my" ? "active" : ""}`}
+                  >
+                    My Time Logging
+                  </Link>
+                </>
+              )}
+            </>
+          ) : (
+            <Link href="/time-logging" className="home-nav-item active">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+              Time Logging
+            </Link>
+          )}
           {user.role === "admin" && (
             <Link href="/?view=manage-team" className="home-nav-item">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -455,7 +692,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
 
         <div className="home-content">
           <main className="timelog-main">
-            {user.role === "admin" && (
+            {showTeamView && (
               <div className="timelog-admin-section">
                 <div className="section-row" style={{ marginBottom: 12 }}>
                   <div>
@@ -470,13 +707,43 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                       <span className="timelog-admin-legend-item"><span className="timelog-day-dot missing" />No logs</span>
                     </div>
                   </div>
-                  {!adminOverviewLoading && adminOverview && (
-                    <span className="section-status success">{adminOverview.users.length} users</span>
-                  )}
+                  <div className="timelog-admin-actions">
+                    {!adminOverviewLoading && adminOverview && (
+                      <span className="section-status success">{adminOverview.users.length} users</span>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={handleDownloadAdminReport}
+                      disabled={reportDownloading}
+                    >
+                      {reportDownloading ? "Preparing report…" : "Download XLSX Report"}
+                    </button>
+                  </div>
                 </div>
+                {reportError && <span className="timelog-error-msg">{reportError}</span>}
 
                 {adminOverviewLoading ? (
-                  <div className="timelog-history-loading">Loading team logging status…</div>
+                  <div className="timelog-admin-list">
+                    {[0, 1, 2, 3].map((i) => (
+                      <div key={i} className="timelog-admin-card" style={{ pointerEvents: "none", opacity: 0.7 }}>
+                        <div className="timelog-admin-summary member-summary timelog-admin-tab-row" style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>
+                          <div className="sk sk-round" style={{ width: 36, height: 36, flexShrink: 0 }} />
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                            <div className="sk" style={{ width: 140, height: 13 }} />
+                            <div className="sk" style={{ width: 70, height: 11 }} />
+                          </div>
+                          <div className="sk" style={{ width: 88, height: 30, borderRadius: 6 }} />
+                          <div style={{ display: "flex", gap: 5 }}>
+                            {[0, 1, 2, 3, 4].map((d) => (
+                              <div key={d} className="sk sk-round" style={{ width: 18, height: 18 }} />
+                            ))}
+                          </div>
+                          <div className="sk" style={{ width: 60, height: 11, borderRadius: 4 }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 ) : !adminOverview || adminOverview.users.length === 0 ? (
                   <div className="empty-state">No active users found.</div>
                 ) : (
@@ -519,7 +786,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                             <span className="timelog-admin-toggle">View logs</span>
                           </summary>
                           <div className="timelog-admin-detail">
-                            {renderWeekGroups(member.weeklyGroups, jiraBaseUrl)}
+                            {renderWeekGroups(member.weeklyGroups, member.accountId, jiraBaseUrl, weekLoading, weekData, loadWeekData)}
                           </div>
                         </details>
                       );
@@ -529,7 +796,7 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
               </div>
             )}
 
-            {user.role !== "admin" && (
+            {showMyView && (
               <>
                 <div className="timelog-form-card">
                   <div className="timelog-form-header">
@@ -559,7 +826,24 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                     </div>
 
                     {issueLoading && issueResults.length === 0 ? (
-                      <div className="timelog-history-loading">Loading assigned tasks…</div>
+                      <div className="timelog-task-grid">
+                        {[0, 1, 2, 3, 4, 5].map((i) => (
+                          <div key={i} className="timelog-task-card" style={{ pointerEvents: "none", opacity: 0.7 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                              <div className="sk" style={{ width: 90, height: 11 }} />
+                              <div className="sk" style={{ width: 48, height: 18, borderRadius: 4 }} />
+                            </div>
+                            <div className="sk" style={{ width: "90%", height: 13, marginBottom: 6 }} />
+                            <div className="sk" style={{ width: 55, height: 11, marginBottom: 12 }} />
+                            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                              <div className="sk" style={{ width: 72, height: 36, borderRadius: 6 }} />
+                              <div className="sk" style={{ width: 72, height: 36, borderRadius: 6 }} />
+                            </div>
+                            <div className="sk" style={{ width: 80, height: 11, marginBottom: 12 }} />
+                            <div className="sk" style={{ width: "100%", height: 32, borderRadius: 6 }} />
+                          </div>
+                        ))}
+                      </div>
                     ) : issueResults.length === 0 ? (
                       <div className="empty-state">No assigned tasks found.</div>
                     ) : (
@@ -602,7 +886,8 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                                 className="primary-button timelog-task-log-button"
                                 onClick={() => {
                                   setSelectedIssue(issue);
-                                  setTimeInput("");
+                                  setTimeHours(0);
+                                  setTimeMinutes(0);
                                   setDescription("");
                                   setTimeError("");
                                   setSubmitError("");
@@ -625,8 +910,8 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                             </button>
                           </div>
                         )}
-                      </>
-                    )}
+              </>
+            )}
 
                     {submitSuccess && (
                       <span className="timelog-success-msg">
@@ -648,15 +933,37 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                       </p>
                       <div className="modal-fields">
                         <div className="field-group">
-                          <label className="field-label" htmlFor="tl-time">Time Spent</label>
-                          <input
-                            id="tl-time"
-                            type="text"
-                            className={`field-control ${timeError ? "field-control-error" : ""}`}
-                            placeholder="e.g. 2h, 30m, 2h 30m"
-                            value={timeInput}
-                            onChange={(e) => { setTimeInput(e.target.value); setTimeError(""); }}
-                          />
+                          <label className="field-label">Time Spent</label>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                              <input
+                                id="tl-time-hours"
+                                type="number"
+                                min={0}
+                                max={23}
+                                className={`field-control ${timeError ? "field-control-error" : ""}`}
+                                style={{ width: 72, textAlign: "center" }}
+                                value={timeHours === 0 ? "" : timeHours}
+                                placeholder="0"
+                                onChange={(e) => { setTimeHours(Math.max(0, Math.min(23, parseInt(e.target.value) || 0))); setTimeError(""); }}
+                              />
+                              <span style={{ fontSize: 13, color: "var(--muted-mid)", flexShrink: 0 }}>hrs</span>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                              <input
+                                id="tl-time-minutes"
+                                type="number"
+                                min={0}
+                                max={59}
+                                className={`field-control ${timeError ? "field-control-error" : ""}`}
+                                style={{ width: 72, textAlign: "center" }}
+                                value={timeMinutes === 0 ? "" : timeMinutes}
+                                placeholder="0"
+                                onChange={(e) => { setTimeMinutes(Math.max(0, Math.min(59, parseInt(e.target.value) || 0))); setTimeError(""); }}
+                              />
+                              <span style={{ fontSize: 13, color: "var(--muted-mid)", flexShrink: 0 }}>min</span>
+                            </div>
+                          </div>
                           {timeError && <span className="inline-error">{timeError}</span>}
                         </div>
                         <div className="field-group">
@@ -679,6 +986,8 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
                           onClick={() => {
                             if (submitting) return;
                             setSelectedIssue(null);
+                            setTimeHours(0);
+                            setTimeMinutes(0);
                             setTimeError("");
                             setSubmitError("");
                           }}
@@ -699,77 +1008,40 @@ export function TimeLogShell({ user }: { user: SessionUser }) {
 
                 {/* History section */}
                 <div className="timelog-history-section">
-              <div className="section-row" style={{ marginBottom: 12 }}>
+                <div className="section-row" style={{ marginBottom: 12 }}>
                 <div className="section-label">My Logged Work</div>
                 {!historyLoading && (
                   <span className="section-status success">
-                    {historyTotal} entries · Page {historyPage} of {historyTotalPages}
+                    {historyTotal} entries in last 90 days
                   </span>
                 )}
               </div>
 
-              {historyLoading ? (
-                <div className="timelog-history-loading">Loading your work history…</div>
-              ) : history.length === 0 ? (
-                <div className="empty-state">No logged work in the last 90 days.</div>
-              ) : (
-                <div className="timelog-history-table">
-                  <div className="timelog-history-head">
-                    <span>Date</span>
-                    <span>Issue</span>
-                    <span>Project</span>
-                    <span>Time</span>
-                    <span>Description</span>
-                  </div>
-                  {history.map((entry) => (
-                    <div key={entry.id} className="timelog-history-row">
-                      <span className="timelog-history-date">{formatDate(entry.started)}</span>
-                      <div className="timelog-history-issue">
-                        <a
-                          className="ticket-link"
-                          href={jiraBaseUrl ? `${jiraBaseUrl}/browse/${entry.issueKey}` : "#"}
-                          target={jiraBaseUrl ? "_blank" : undefined}
-                          rel={jiraBaseUrl ? "noreferrer" : undefined}
-                        >
-                          {entry.issueSummary}
-                        </a>
-                        <div className="task-key">{entry.issueKey}</div>
+              <div className="timelog-month-summary-grid">
+                {historyLoading ? (
+                  <>
+                    {[0, 1].map((i) => (
+                      <div key={i} className="timelog-month-summary-card" style={{ pointerEvents: "none", opacity: 0.7 }}>
+                        <div className="sk" style={{ width: 110, height: 12, marginBottom: 8 }} />
+                        <div className="sk" style={{ width: 82, height: 24, marginBottom: 10, borderRadius: 6 }} />
+                        <div className="sk" style={{ width: 130, height: 11 }} />
                       </div>
-                      <span className="timelog-history-project">{entry.projectKey}</span>
-                      <span className="timelog-history-time">{secondsToHuman(entry.timeSpentSeconds)}</span>
-                      <span className="timelog-history-desc">
-                        {entry.comment
-                          ? entry.comment.length > 80
-                            ? entry.comment.slice(0, 80) + "…"
-                            : entry.comment
-                          : <em className="epic-not-linked">—</em>}
-                      </span>
-                    </div>
-                  ))}
-                  {historyTotalPages > 1 && (
-                    <div className="timelog-pagination">
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={historyPage <= 1 || historyLoading}
-                        onClick={() => loadHistory(historyPage - 1)}
-                      >
-                        Previous
-                      </button>
-                      <span className="timelog-pagination-label">
-                        Showing {history.length} of {historyTotal}
-                      </span>
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={historyPage >= historyTotalPages || historyLoading}
-                        onClick={() => loadHistory(historyPage + 1)}
-                      >
-                        Next
-                      </button>
-                    </div>
-                  )}
-                </div>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    {historySummaries
+                      ? [
+                          renderPersonalMonthCard(historySummaries.thisMonth, jiraBaseUrl),
+                          renderPersonalMonthCard(historySummaries.previousMonth, jiraBaseUrl),
+                        ]
+                      : null}
+                  </>
+                )}
+              </div>
+
+              {!historyLoading && !historySummaries && (
+                <div className="empty-state">Unable to load logged work right now.</div>
               )}
                 </div>
               </>

@@ -213,6 +213,88 @@ export async function fetchAllIssueWorklogs(issues: JiraIssue[]): Promise<JiraWo
   return batches.flat();
 }
 
+// Bulk worklog fetch — 2-3 API calls instead of one per issue
+// Uses /worklog/updated (IDs since epoch) + /worklog/list (bulk detail fetch)
+export async function fetchWorklogsForDateRange(
+  from: string,
+  to: string,
+  issueById: Map<string, JiraIssue>,
+  endTimestamp?: string
+): Promise<JiraWorklog[]> {
+  // Convert IST midnight of `from` date to epoch ms for the since parameter
+  const sinceMs = new Date(`${from}T00:00:00.000+05:30`).getTime();
+  const endBoundMs = endTimestamp
+    ? new Date(endTimestamp).getTime()
+    : new Date(`${to}T23:59:59.999+05:30`).getTime();
+
+  // Step 1: Collect all worklog IDs updated since the start of `from`
+  // We paginate until lastPage — the started-date filter in step 2 scopes results to the right week.
+  // We must NOT stop at untilMs here: a worklog started in-range may have been edited later,
+  // giving it an updatedTime after `to`. Stopping early would silently drop it.
+  const worklogIds: number[] = [];
+  let cursor = sinceMs;
+
+  while (true) {
+    const page = await jiraFetch<{
+      values: Array<{ worklogId: number; updatedTime: number }>;
+      since: number;
+      until: number;
+      lastPage: boolean;
+    }>(`/rest/api/3/worklog/updated?since=${cursor}`);
+
+    for (const entry of page.values) {
+      worklogIds.push(entry.worklogId);
+    }
+
+    if (page.lastPage) break;
+    cursor = page.until;
+  }
+
+  if (worklogIds.length === 0) return [];
+
+  // Step 2: Bulk-fetch worklog details in batches of 1000
+  const BATCH = 1000;
+  const allWorklogs: JiraWorklog[] = [];
+
+  for (let i = 0; i < worklogIds.length; i += BATCH) {
+    const batchIds = worklogIds.slice(i, i + BATCH);
+    const items = await jiraFetch<Array<{
+      id: string | number;
+      issueId: string;
+      author?: { accountId?: string; displayName?: string };
+      started?: string;
+      timeSpentSeconds?: number;
+    }>>("/rest/api/3/worklog/list", {
+      method: "POST",
+      body: JSON.stringify({ ids: batchIds }),
+    });
+
+    for (const worklog of items) {
+      if (!worklog.author?.accountId || !worklog.author?.displayName || !worklog.started) continue;
+      const startedDate = worklog.started.slice(0, 10);
+      if (startedDate < from || startedDate > to) continue;
+      if (new Date(worklog.started).getTime() > endBoundMs) continue;
+
+      const issue = issueById.get(worklog.issueId);
+      if (!issue) continue; // not in our project/date scope
+
+      allWorklogs.push({
+        id: String(worklog.id),
+        issueId: worklog.issueId,
+        issueKey: issue.key,
+        issueSummary: issue.summary,
+        projectKey: issue.projectKey,
+        authorAccountId: worklog.author.accountId,
+        authorDisplayName: worklog.author.displayName,
+        started: worklog.started,
+        timeSpentSeconds: worklog.timeSpentSeconds ?? 0,
+      });
+    }
+  }
+
+  return allWorklogs;
+}
+
 export const getCachedUsers = unstable_cache(
   fetchAllUsers,
   ["jira-users"],

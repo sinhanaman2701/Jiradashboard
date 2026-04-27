@@ -1,9 +1,8 @@
-import { parseYmd, shiftDays, startOfWeekMonday, todayIST } from "@/lib/date-utils";
-import { fetchAllIssueWorklogs, getCachedUsers, isJiraConfigured, searchIssuesWithWorklogs } from "@/lib/jira/client";
+import { currentIstTimestamp, endOfMonth, parseYmd, shiftDays, startOfMonth, startOfWeekMonday, todayIST } from "@/lib/date-utils";
+import { fetchAllIssueWorklogs, fetchWorklogsForDateRange, getCachedUsers, isJiraConfigured, searchIssuesWithWorklogs } from "@/lib/jira/client";
 import type { JiraWorklog } from "@/lib/jira/types";
 
 const WORK_WEEK_DAYS = 5;
-const ADMIN_LOOKBACK_DAYS = 30;
 
 function toHours(seconds: number): number {
   return Math.round((seconds / 3600) * 100) / 100;
@@ -44,9 +43,12 @@ export interface AdminTimeLogWeek {
   label: string;
   from: string;
   to: string;
+  toTimestamp?: string;
   totalLoggedSeconds: number;
   totalLoggedHours: number;
   productClientGroups: ProductClientGroup[];
+  hoursLabelMode: "weekly-target" | "total";
+  loaded: boolean;
 }
 
 export interface AdminTimeLogUser {
@@ -65,6 +67,35 @@ export interface AdminTimeLogOverview {
   from: string;
   to: string;
   users: AdminTimeLogUser[];
+}
+
+export interface AdminTimeLogReportTask {
+  issueKey: string;
+  issueSummary: string;
+  projectKey: string;
+  loggedSeconds: number;
+  loggedHours: number;
+  eta?: string;
+  lastLoggedAt: string;
+  productClient?: string;
+}
+
+export interface AdminTimeLogReportUser {
+  accountId: string;
+  displayName: string;
+  totalLoggedSeconds: number;
+  totalLoggedHours: number;
+  taskCount: number;
+  tasks: AdminTimeLogReportTask[];
+}
+
+export interface AdminTimeLogReportPeriod {
+  key: "this-month" | "previous-month";
+  label: string;
+  from: string;
+  to: string;
+  generatedAt: string;
+  users: AdminTimeLogReportUser[];
 }
 
 function buildProductClientGroups(userLogs: JiraWorklog[], issueMap: Map<string, ReturnType<typeof searchIssuesWithWorklogs> extends Promise<(infer T)[]> ? T : never>): ProductClientGroup[] {
@@ -110,12 +141,51 @@ function buildProductClientGroups(userLogs: JiraWorklog[], issueMap: Map<string,
     }));
 }
 
+function buildReportTasks(
+  userLogs: JiraWorklog[],
+  issueMap: Map<string, ReturnType<typeof searchIssuesWithWorklogs> extends Promise<(infer T)[]> ? T : never>
+): AdminTimeLogReportTask[] {
+  const taskMap = new Map<string, AdminTimeLogReportTask>();
+
+  for (const worklog of userLogs) {
+    const issue = issueMap.get(worklog.issueKey);
+    const existing = taskMap.get(worklog.issueKey);
+    if (existing) {
+      existing.loggedSeconds += worklog.timeSpentSeconds;
+      existing.loggedHours = toHours(existing.loggedSeconds);
+      if (worklog.started > existing.lastLoggedAt) existing.lastLoggedAt = worklog.started;
+      continue;
+    }
+
+    taskMap.set(worklog.issueKey, {
+      issueKey: worklog.issueKey,
+      issueSummary: worklog.issueSummary,
+      projectKey: worklog.projectKey,
+      loggedSeconds: worklog.timeSpentSeconds,
+      loggedHours: toHours(worklog.timeSpentSeconds),
+      eta: issue?.eta,
+      lastLoggedAt: worklog.started,
+      productClient: issue?.productClient,
+    });
+  }
+
+  return [...taskMap.values()].sort((a, b) => {
+    if (b.loggedSeconds !== a.loggedSeconds) return b.loggedSeconds - a.loggedSeconds;
+    return b.lastLoggedAt.localeCompare(a.lastLoggedAt);
+  });
+}
+
+// Initial load — current week only (fast)
 export async function getAdminTimeLogOverview(): Promise<AdminTimeLogOverview> {
   const today = todayIST();
+  const nowTimestamp = currentIstTimestamp();
   const from = startOfWeekMonday(today);
   const to = shiftDays(from, WORK_WEEK_DAYS - 1);
+  const thisMonthFrom = startOfMonth(today);
+  const previousMonthDate = shiftDays(thisMonthFrom, -1);
+  const previousMonthFrom = startOfMonth(previousMonthDate);
+  const previousMonthTo = endOfMonth(previousMonthDate);
   const dates = Array.from({ length: WORK_WEEK_DAYS }, (_, index) => shiftDays(from, index));
-  const oldestWeekFrom = shiftDays(today, -(ADMIN_LOOKBACK_DAYS - 1));
 
   if (!isJiraConfigured()) {
     return { from, to, users: [] };
@@ -123,15 +193,15 @@ export async function getAdminTimeLogOverview(): Promise<AdminTimeLogOverview> {
 
   const [users, issues] = await Promise.all([
     getCachedUsers(),
-    searchIssuesWithWorklogs({ from: oldestWeekFrom, to: today }),
+    searchIssuesWithWorklogs({ from, to: today }),
   ]);
-  const worklogs = await fetchAllIssueWorklogs(issues);
   const issueMap = new Map(issues.map((i) => [i.key, i]));
+  const worklogs = await fetchAllIssueWorklogs(issues);
 
   const logsByUser = new Map<string, JiraWorklog[]>();
   for (const worklog of worklogs) {
     const date = worklogDate(worklog.started);
-    if (date < oldestWeekFrom || date > today) continue;
+    if (date < from || date > today) continue;
     const existing = logsByUser.get(worklog.authorAccountId);
     if (existing) existing.push(worklog);
     else logsByUser.set(worklog.authorAccountId, [worklog]);
@@ -145,8 +215,27 @@ export async function getAdminTimeLogOverview(): Promise<AdminTimeLogOverview> {
       .map((user) => {
         const userLogs = logsByUser.get(user.accountId) ?? [];
         const secondsByDate = new Map<string, number>(dates.map((date) => [date, 0]));
+
+        for (const worklog of userLogs) {
+          const date = worklogDate(worklog.started);
+          secondsByDate.set(date, (secondsByDate.get(date) ?? 0) + worklog.timeSpentSeconds);
+        }
+
+        const thisWeekSeconds = userLogs.reduce((sum, w) => sum + w.timeSpentSeconds, 0);
+        const thisWeekGroups = buildProductClientGroups(userLogs, issueMap);
+
         const weeklyGroups: AdminTimeLogWeek[] = [
-          { key: "this-week", label: "This week", from, to, totalLoggedSeconds: 0, totalLoggedHours: 0, productClientGroups: [] },
+          {
+            key: "this-week",
+            label: "This week",
+            from,
+            to,
+            totalLoggedSeconds: thisWeekSeconds,
+            totalLoggedHours: toHours(thisWeekSeconds),
+            productClientGroups: thisWeekGroups,
+            hoursLabelMode: "weekly-target",
+            loaded: true,
+          },
           {
             key: "previous-week",
             label: "Previous week",
@@ -155,6 +244,8 @@ export async function getAdminTimeLogOverview(): Promise<AdminTimeLogOverview> {
             totalLoggedSeconds: 0,
             totalLoggedHours: 0,
             productClientGroups: [],
+            hoursLabelMode: "weekly-target",
+            loaded: false,
           },
           {
             key: "two-weeks-ago",
@@ -164,25 +255,33 @@ export async function getAdminTimeLogOverview(): Promise<AdminTimeLogOverview> {
             totalLoggedSeconds: 0,
             totalLoggedHours: 0,
             productClientGroups: [],
+            hoursLabelMode: "weekly-target",
+            loaded: false,
+          },
+          {
+            key: "this-month",
+            label: "This month",
+            from: thisMonthFrom,
+            to: today,
+            toTimestamp: nowTimestamp,
+            totalLoggedSeconds: 0,
+            totalLoggedHours: 0,
+            productClientGroups: [],
+            hoursLabelMode: "total",
+            loaded: false,
+          },
+          {
+            key: "previous-month",
+            label: "Previous month",
+            from: previousMonthFrom,
+            to: previousMonthTo,
+            totalLoggedSeconds: 0,
+            totalLoggedHours: 0,
+            productClientGroups: [],
+            hoursLabelMode: "total",
+            loaded: false,
           },
         ];
-
-        for (const worklog of userLogs) {
-          const date = worklogDate(worklog.started);
-          if (date >= from && date <= today) {
-            secondsByDate.set(date, (secondsByDate.get(date) ?? 0) + worklog.timeSpentSeconds);
-          }
-        }
-
-        for (const week of weeklyGroups) {
-          const weekLogs = userLogs.filter((worklog) => {
-            const date = worklogDate(worklog.started);
-            return date >= week.from && date <= week.to && date <= today;
-          });
-          week.totalLoggedSeconds = weekLogs.reduce((sum, worklog) => sum + worklog.timeSpentSeconds, 0);
-          week.totalLoggedHours = toHours(week.totalLoggedSeconds);
-          week.productClientGroups = buildProductClientGroups(weekLogs, issueMap);
-        }
 
         const todayLoggedSeconds = secondsByDate.get(today) ?? 0;
         const weeklyLoggedSeconds = [...secondsByDate.entries()]
@@ -208,7 +307,7 @@ export async function getAdminTimeLogOverview(): Promise<AdminTimeLogOverview> {
               isUpcoming: date > today,
             };
           }),
-          productClientGroups: weeklyGroups[0]?.productClientGroups ?? [],
+          productClientGroups: thisWeekGroups,
           weeklyGroups,
         };
       })
@@ -217,5 +316,93 @@ export async function getAdminTimeLogOverview(): Promise<AdminTimeLogOverview> {
         if (a.todayLoggedSeconds > 0 && b.todayLoggedSeconds === 0) return 1;
         return a.displayName.localeCompare(b.displayName);
       }),
+  };
+}
+
+// Lazy load — called when a user opens a previous week's "View logs"
+export async function getAdminUserWeekData(
+  accountId: string,
+  from: string,
+  to: string,
+  endTimestamp?: string
+): Promise<{ totalLoggedSeconds: number; productClientGroups: ProductClientGroup[] }> {
+  if (!isJiraConfigured()) return { totalLoggedSeconds: 0, productClientGroups: [] };
+
+  // Run issue search and bulk worklog ID collection in parallel
+  const issues = await searchIssuesWithWorklogs({ from, to });
+  const issueMap = new Map(issues.map((i) => [i.key, i]));
+  const issueById = new Map(issues.map((i) => [i.id, i]));
+
+  // Bulk fetch: 2-3 API calls instead of one per issue
+  const worklogs = await fetchWorklogsForDateRange(from, to, issueById, endTimestamp);
+
+  const userLogs = worklogs.filter((w) => w.authorAccountId === accountId);
+
+  const totalLoggedSeconds = userLogs.reduce((sum, w) => sum + w.timeSpentSeconds, 0);
+  const productClientGroups = buildProductClientGroups(userLogs, issueMap);
+
+  return { totalLoggedSeconds, productClientGroups };
+}
+
+export async function getAdminTeamPeriodReport(args: {
+  key: "this-month" | "previous-month";
+  label: string;
+  from: string;
+  to: string;
+  endTimestamp?: string;
+}): Promise<AdminTimeLogReportPeriod> {
+  if (!isJiraConfigured()) {
+    return {
+      key: args.key,
+      label: args.label,
+      from: args.from,
+      to: args.to,
+      generatedAt: new Date().toISOString(),
+      users: [],
+    };
+  }
+
+  const [users, issues] = await Promise.all([
+    getCachedUsers(),
+    searchIssuesWithWorklogs({ from: args.from, to: args.to }),
+  ]);
+  const issueMap = new Map(issues.map((i) => [i.key, i]));
+  const issueById = new Map(issues.map((i) => [i.id, i]));
+  const worklogs = await fetchWorklogsForDateRange(args.from, args.to, issueById, args.endTimestamp);
+
+  const logsByUser = new Map<string, JiraWorklog[]>();
+  for (const worklog of worklogs) {
+    const existing = logsByUser.get(worklog.authorAccountId);
+    if (existing) existing.push(worklog);
+    else logsByUser.set(worklog.authorAccountId, [worklog]);
+  }
+
+  const reportUsers = users
+    .filter((user) => user.active)
+    .map((user) => {
+      const userLogs = logsByUser.get(user.accountId) ?? [];
+      const tasks = buildReportTasks(userLogs, issueMap);
+      const totalLoggedSeconds = userLogs.reduce((sum, worklog) => sum + worklog.timeSpentSeconds, 0);
+      return {
+        accountId: user.accountId,
+        displayName: user.displayName,
+        totalLoggedSeconds,
+        totalLoggedHours: toHours(totalLoggedSeconds),
+        taskCount: tasks.length,
+        tasks,
+      };
+    })
+    .sort((a, b) => {
+      if (b.totalLoggedSeconds !== a.totalLoggedSeconds) return b.totalLoggedSeconds - a.totalLoggedSeconds;
+      return a.displayName.localeCompare(b.displayName);
+    });
+
+  return {
+    key: args.key,
+    label: args.label,
+    from: args.from,
+    to: args.to,
+    generatedAt: new Date().toISOString(),
+    users: reportUsers,
   };
 }

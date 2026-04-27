@@ -43,13 +43,7 @@ export default async function Home({
 }: {
   searchParams?: Promise<{ preset?: string; from?: string; to?: string; view?: string; refresh?: string }>;
 }) {
-  const { cookies } = await import("next/headers");
-  const cookieStore = await cookies();
-  const sidCookie = cookieStore.get("jd-sid");
-  console.log("[page/] jd-sid cookie present:", !!sidCookie?.value, "value prefix:", sidCookie?.value?.slice(0, 8));
-
   const user = await getCurrentUser();
-  console.log("[page/] user from session:", user?.displayName ?? "null");
   if (!user) redirect("/login");
   if (user.role !== "admin") redirect("/time-logging");
 

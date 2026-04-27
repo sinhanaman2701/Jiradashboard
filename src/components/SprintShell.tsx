@@ -368,7 +368,11 @@ function MultiSelect({
       {open && (
         <div className="multi-select-dropdown">
           {loading ? (
-            <div className="multi-select-loading">Loading…</div>
+            <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
+              {[90, 110, 75, 95].map((w, i) => (
+                <div key={i} className="sk" style={{ width: w, height: 12 }} />
+              ))}
+            </div>
           ) : options.length === 0 ? (
             <div className="multi-select-loading">No options</div>
           ) : (
@@ -403,8 +407,12 @@ export function SprintShell() {
   const [selectedSprintIds, setSelectedSprintIds] = useState<Set<string>>(new Set());
   const sprintById = useRef<Map<number, Sprint & { projectKey: string; projectName: string }>>(new Map());
 
+  const projectsRestored = useRef(false);
+  const pendingSprintIds = useRef<Set<string>>(new Set());
+
   const [results, setResults] = useState<SprintResult[]>([]);
   const [applying, setApplying] = useState(false);
+  const [applyError, setApplyError] = useState("");
 
   const [tooltip, setTooltip] = useState<{
     x: number;
@@ -446,6 +454,52 @@ export function SprintShell() {
       })
       .catch(() => setProjectsLoading(false));
   }, []);
+
+  // Restore saved selections once projects load
+  useEffect(() => {
+    if (projectsLoading || projectsRestored.current || projects.length === 0) return;
+    projectsRestored.current = true;
+    try {
+      const savedSprints = localStorage.getItem("jd-sprint-ids-v1");
+      if (savedSprints) pendingSprintIds.current = new Set(JSON.parse(savedSprints));
+      const savedProjects = localStorage.getItem("jd-sprint-projects-v1");
+      if (savedProjects) {
+        const keys: string[] = JSON.parse(savedProjects);
+        const valid = keys.filter((k) => projects.some((p) => p.key === k));
+        if (valid.length > 0) {
+          setSelectedProjectKeys(new Set(valid));
+          for (const key of valid) loadSprintsForProject(key);
+        }
+      }
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, projectsLoading]);
+
+  // Apply pending sprint IDs once their sprints are loaded
+  useEffect(() => {
+    if (pendingSprintIds.current.size === 0) return;
+    const loaded = Object.values(sprintsMap).flat().map((s) => String(s.id));
+    const applicable = loaded.filter((id) => pendingSprintIds.current.has(id));
+    if (applicable.length === 0) return;
+    setSelectedSprintIds((prev) => {
+      const next = new Set(prev);
+      for (const id of applicable) next.add(id);
+      return next;
+    });
+    for (const id of applicable) pendingSprintIds.current.delete(id);
+  }, [sprintsMap]);
+
+  // Persist project selections
+  useEffect(() => {
+    if (!projectsRestored.current) return;
+    localStorage.setItem("jd-sprint-projects-v1", JSON.stringify(Array.from(selectedProjectKeys)));
+  }, [selectedProjectKeys]);
+
+  // Persist sprint selections
+  useEffect(() => {
+    if (!projectsRestored.current) return;
+    localStorage.setItem("jd-sprint-ids-v1", JSON.stringify(Array.from(selectedSprintIds)));
+  }, [selectedSprintIds]);
 
   async function readJsonArray<T>(response: Response): Promise<T[]> {
     if (!response.ok) return [];
@@ -533,43 +587,42 @@ export function SprintShell() {
   async function handleApply() {
     if (selectedSprintIds.size === 0) return;
     setApplying(true);
+    setApplyError("");
     setResults([]);
+    try {
+      const sprintEntries = Array.from(selectedSprintIds)
+        .map((id) => sprintById.current.get(Number(id)))
+        .filter(Boolean) as (Sprint & { projectKey: string; projectName: string })[];
 
-    const sprintEntries = Array.from(selectedSprintIds)
-      .map((id) => sprintById.current.get(Number(id)))
-      .filter(Boolean) as (Sprint & { projectKey: string; projectName: string })[];
+      const fetched = await Promise.all(
+        sprintEntries.map(async (sprint) => {
+          const params = new URLSearchParams();
+          if (sprint.startDate) params.set("startDate", sprint.startDate.slice(0, 10));
+          if (sprint.endDate) params.set("endDate", sprint.endDate.slice(0, 10));
+          const issues: SprintIssue[] = await fetch(
+            `/api/sprints/sprint/${sprint.id}/issues?${params.toString()}`
+          ).then((r) => readJsonArray<SprintIssue>(r));
 
-    const fetched = await Promise.all(
-      sprintEntries.map(async (sprint) => {
-        const params = new URLSearchParams();
-        if (sprint.startDate) params.set("startDate", sprint.startDate.slice(0, 10));
-        if (sprint.endDate) params.set("endDate", sprint.endDate.slice(0, 10));
-        const issues: SprintIssue[] = await fetch(
-          `/api/sprints/sprint/${sprint.id}/issues?${params.toString()}`
-        ).then((r) => readJsonArray<SprintIssue>(r));
+          return {
+            sprintId: sprint.id,
+            sprintName: sprint.name,
+            state: sprint.state,
+            startDate: sprint.startDate,
+            endDate: sprint.endDate,
+            projectKey: sprint.projectKey,
+            projectName: sprint.projectName,
+            issues
+          } satisfies SprintResult;
+        })
+      );
 
-        return {
-          sprintId: sprint.id,
-          sprintName: sprint.name,
-          state: sprint.state,
-          startDate: sprint.startDate,
-          endDate: sprint.endDate,
-          projectKey: sprint.projectKey,
-          projectName: sprint.projectName,
-          issues
-        } satisfies SprintResult;
-      })
-    );
-
-    const grouped = new Map<string, SprintResult[]>();
-    for (const r of fetched) {
-      const arr = grouped.get(r.projectKey) ?? [];
-      arr.push(r);
-      grouped.set(r.projectKey, arr);
+      setResults(fetched);
+    } catch {
+      setApplyError("Failed to load sprint data. Please try again.");
+      setResults([]);
+    } finally {
+      setApplying(false);
     }
-
-    setResults(fetched);
-    setApplying(false);
   }
 
   const projectOptions = projects.map((p) => ({ value: p.key, label: p.name }));
@@ -819,6 +872,8 @@ export function SprintShell() {
           </button>
         </div>
       </div>
+
+      {applyError && <span className="timelog-error-msg">{applyError}</span>}
 
       {results.length === 0 && !applying && (
         <div className="sprint-empty-state">

@@ -214,6 +214,24 @@ function HoursBar({ user }: { user: JiraUserSummary }) {
   );
 }
 
+function SkeletonTeamCard() {
+  return (
+    <div className="team-dashboard-card" style={{ opacity: 0.55, pointerEvents: "none" }}>
+      <div className="team-dashboard-summary">
+        <div style={{ width: 40, height: 40, borderRadius: "50%", background: "#e5e7eb", flexShrink: 0 }} />
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ width: 130, height: 13, background: "#e5e7eb", borderRadius: 4 }} />
+          <div style={{ width: 80, height: 11, background: "#f3f4f6", borderRadius: 4 }} />
+        </div>
+        {[0, 1, 2].map((i) => (
+          <div key={i} style={{ width: 72, height: 38, background: "#f3f4f6", borderRadius: 6 }} />
+        ))}
+        <div style={{ width: 80, height: 24, background: "#f3f4f6", borderRadius: 12 }} />
+      </div>
+    </div>
+  );
+}
+
 function GoalsTooltip({
   lines,
   position,
@@ -294,17 +312,21 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [teams, setTeams] = useState<TeamRecord[]>([]);
+  const [teamsLoading, setTeamsLoading] = useState(view === "dashboard");
   const [selectedTeam, setSelectedTeam] = useState("");
   const [activeSprintCount, setActiveSprintCount] = useState<number | null>(null);
   const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
   const [openTeams, setOpenTeams] = useState<Record<string, boolean>>({});
   const [sprintGoals, setSprintGoals] = useState<SprintGoalsSummary | null>(null);
+  const [ticketSort, setTicketSort] = useState<Record<string, { col: "logged" | "total" | "variance"; dir: "asc" | "desc" } | null>>({});
 
   useEffect(() => {
     if (view !== "dashboard") return;
+    setTeamsLoading(true);
     fetch(`/api/teams${refreshKey ? `?refresh=${encodeURIComponent(refreshKey)}` : ""}`)
       .then((res) => res.json())
-      .then((data: TeamRecord[]) => setTeams(data));
+      .then((data: TeamRecord[]) => setTeams(data))
+      .finally(() => setTeamsLoading(false));
   }, [refreshKey, view]);
 
   useEffect(() => {
@@ -367,6 +389,12 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
     return teamGroups.filter((teamGroup) => teamGroup.id === selectedTeam);
   }, [selectedTeam, teamGroups]);
 
+  useEffect(() => {
+    if (!selectedTeam) return;
+    if (teamGroups.some((teamGroup) => teamGroup.id === selectedTeam)) return;
+    setSelectedTeam("");
+  }, [selectedTeam, teamGroups]);
+
   const belowTarget = visibleUsers.filter((user) => user.loggedHours < user.expectedHours).length;
 
   const renderUserCard = (dashboardUser: JiraUserSummary) => {
@@ -375,7 +403,7 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
     const status = statusFor(dashboardUser);
 
     return (
-      <div key={dashboardUser.accountId} className="member-card team-member-card">
+      <div key={dashboardUser.accountId} className={`member-card team-member-card${isOpen ? " open" : ""}`}>
         <button
           type="button"
           className="member-summary"
@@ -436,16 +464,54 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
                 <span>Task</span>
                 <span>Epic</span>
                 <span>Space</span>
-                <span>Logged</span>
-                <span>Total Logged</span>
+                {(["logged", "total", "variance"] as const).map((col, i) => {
+                  const labels = { logged: "Logged", total: "Total Logged", variance: "ETA Variance (All-time)" };
+                  const sort = ticketSort[dashboardUser.accountId];
+                  const active = sort?.col === col;
+                  return (
+                    <span
+                      key={col}
+                      style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
+                      title={col === "variance" ? "Total hours logged vs ETA — not filtered by date range" : undefined}
+                      onClick={() =>
+                        setTicketSort((prev) => {
+                          const current = prev[dashboardUser.accountId];
+                          return {
+                            ...prev,
+                            [dashboardUser.accountId]: current?.col === col
+                              ? { col, dir: current.dir === "asc" ? "desc" : "asc" }
+                              : { col, dir: "desc" }
+                          };
+                        })
+                      }
+                    >
+                      {labels[col]}{active ? (ticketSort[dashboardUser.accountId]?.dir === "asc" ? " ▲" : " ▼") : " ⇅"}
+                    </span>
+                  );
+                })}
                 <span>ETA</span>
-                <span>Variance</span>
               </div>
 
               {dashboardUser.ticketBreakdown.length === 0 ? (
                 <div className="task-empty">No logged tickets in this range.</div>
               ) : (
-                dashboardUser.ticketBreakdown.map((ticket, index) => (
+                (() => {
+                  const sort = ticketSort[dashboardUser.accountId];
+                  const tickets = sort
+                    ? [...dashboardUser.ticketBreakdown].sort((a, b) => {
+                        let aVal = 0, bVal = 0;
+                        if (sort.col === "logged") { aVal = a.loggedHours; bVal = b.loggedHours; }
+                        else if (sort.col === "total") { aVal = a.totalLoggedHours; bVal = b.totalLoggedHours; }
+                        else {
+                          const aEta = parseTimeToSeconds(a.eta ?? "");
+                          const bEta = parseTimeToSeconds(b.eta ?? "");
+                          aVal = aEta ? a.totalLoggedSeconds - aEta : -Infinity;
+                          bVal = bEta ? b.totalLoggedSeconds - bEta : -Infinity;
+                        }
+                        return sort.dir === "asc" ? aVal - bVal : bVal - aVal;
+                      })
+                    : dashboardUser.ticketBreakdown;
+                  return tickets.map((ticket, index) => (
                   <div key={ticket.issueKey} className="task-table-row">
                     <div className="task-name-cell">
                       <span
@@ -474,10 +540,11 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
                     <span className="task-space">{ticket.spaceName}</span>
                     <span className="task-logged">{formatHours(ticket.loggedHours)}</span>
                     <span className="task-total-logged">{formatHours(ticket.totalLoggedHours)}</span>
-                    <EtaCell eta={ticket.eta} />
                     <VarianceCell eta={ticket.eta} totalLoggedSeconds={ticket.totalLoggedSeconds} />
+                    <EtaCell eta={ticket.eta} />
                   </div>
-                ))
+                  ))
+                })()
               )}
             </div>
           </div>
@@ -621,20 +688,27 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
         </div>
 
         <div className="section-row">
-          <div className="section-label">Teams — {visibleTeamGroups.length}</div>
+          <div className="section-label">Teams — {teamsLoading ? "…" : visibleTeamGroups.length}</div>
           <div className={`section-status ${belowTarget > 0 ? "danger" : "success"}`}>
             {belowTarget > 0 ? `${belowTarget} below target` : "All on track"}
           </div>
         </div>
 
         <div className="team-dashboard-list">
-          {visibleTeamGroups.length === 0 ? (
+          {teamsLoading ? (
+            <>
+              <SkeletonTeamCard />
+              <SkeletonTeamCard />
+              <SkeletonTeamCard />
+            </>
+          ) : visibleTeamGroups.length === 0 ? (
             <div className="empty-state">No teams or members found.</div>
           ) : (
             visibleTeamGroups.map((teamGroup) => {
               const isTeamOpen = Boolean(openTeams[teamGroup.id]);
+              const sortedMembers = teamGroup.users;
               return (
-                <div key={teamGroup.id} className="team-dashboard-card">
+                <div key={teamGroup.id} className={`team-dashboard-card${isTeamOpen ? " open" : ""}`}>
                   <button
                     type="button"
                     className="team-dashboard-summary"
@@ -689,7 +763,7 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
 
                   <div className={`team-dashboard-expand ${isTeamOpen ? "open" : ""}`}>
                     <div className="team-dashboard-members">
-                      {teamGroup.users.map(renderUserCard)}
+                      {sortedMembers.map(renderUserCard)}
                     </div>
                   </div>
                 </div>
