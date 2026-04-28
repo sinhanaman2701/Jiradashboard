@@ -24,7 +24,12 @@ const sessionStore = g.__sessionStore;
 export const SESSION_COOKIE = "jd-sid";
 
 function isExtraAppAdmin(accountId: string): boolean {
-  const adminIds = (process.env.EXTRA_APP_ADMIN_ACCOUNT_IDS ?? "")
+  const configuredAdminIds =
+    process.env.ADMIN_ACCOUNT_IDS ??
+    process.env.EXTRA_APP_ADMIN_ACCOUNT_IDS ??
+    "";
+
+  const adminIds = configuredAdminIds
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
