@@ -44,6 +44,7 @@ interface DashboardShellProps {
   rangeLabel: string;
   refreshKey: string;
   syncedAt: string;
+  dashboardError?: string | null;
   view: "dashboard" | "sprints" | "manage-team";
   user?: SessionUser;
 }
@@ -307,7 +308,7 @@ function SummaryStrip({
   );
 }
 
-export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refreshKey, syncedAt, view, user }: DashboardShellProps) {
+export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refreshKey, syncedAt, dashboardError, view, user }: DashboardShellProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -694,6 +695,13 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
           </div>
         </div>
 
+        {dashboardError ? (
+          <div className="empty-state">
+            <div className="empty-state-title">Failed to load Jira data</div>
+            <p>{dashboardError}</p>
+          </div>
+        ) : null}
+
         <div className="team-dashboard-list">
           {teamsLoading ? (
             <>
@@ -701,7 +709,7 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
               <SkeletonTeamCard />
               <SkeletonTeamCard />
             </>
-          ) : visibleTeamGroups.length === 0 ? (
+          ) : dashboardError ? null : visibleTeamGroups.length === 0 ? (
             <div className="empty-state">No teams or members found.</div>
           ) : (
             visibleTeamGroups.map((teamGroup) => {
@@ -772,6 +780,23 @@ export function DashboardShell({ data, manageTeamUsers, preset, rangeLabel, refr
           )}
         </div>
       </main>
+          ) : view === "dashboard" && dashboardError ? (
+            <main className="dashboard-main">
+              <div className="toolbar-row">
+                <div className="toolbar-left">
+                  <DateFilterBar preset={preset} customFrom="" customTo="" />
+                </div>
+                <div className="toolbar-sync">
+                  <button type="button" className="secondary-button" onClick={handleRefreshNow}>
+                    Refresh now
+                  </button>
+                </div>
+              </div>
+              <div className="empty-state">
+                <div className="empty-state-title">Failed to load Jira data</div>
+                <p>{dashboardError}</p>
+              </div>
+            </main>
           ) : null}
         </div>
       </div>

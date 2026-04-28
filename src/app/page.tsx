@@ -55,11 +55,19 @@ export default async function Home({
   const selectedRange = getPresetRange(params.preset, params.from, params.to);
 
   const bypassCache = Boolean(params.refresh);
-  const data = view === "dashboard"
-    ? bypassCache
-      ? await getDashboardData({ from: selectedRange.from, to: selectedRange.to, trackingView: "daily" })
-      : await getCachedDashboardData({ from: selectedRange.from, to: selectedRange.to, trackingView: "daily" })
-    : null;
+  let data = null;
+  let dashboardError: string | null = null;
+
+  if (view === "dashboard") {
+    try {
+      data = bypassCache
+        ? await getDashboardData({ from: selectedRange.from, to: selectedRange.to, trackingView: "daily" })
+        : await getCachedDashboardData({ from: selectedRange.from, to: selectedRange.to, trackingView: "daily" });
+    } catch (error) {
+      console.error("Dashboard load failed:", error);
+      dashboardError = "Failed to load Jira data for the selected date range. Please refresh and try again.";
+    }
+  }
   const manageTeamUsers = view === "manage-team"
     ? (isJiraConfigured() ? await getCachedUsers() : mockUsers)
     : [];
@@ -73,6 +81,7 @@ export default async function Home({
       rangeLabel={selectedRange.label}
       refreshKey={params.refresh ?? ""}
       syncedAt={data?.syncedAt ?? new Date().toISOString()}
+      dashboardError={dashboardError}
       user={user}
     />
   );

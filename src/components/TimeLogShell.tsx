@@ -7,7 +7,7 @@ import { AnacityLogo } from "@/components/AnacityLogo";
 import { secondsToHuman } from "@/lib/time-parser";
 import { avatarColor, initials } from "@/lib/teams";
 import type { JiraIssueOption } from "@/lib/jira/timelog";
-import type { AdminTimeLogOverview, AdminTimeLogWeek, ProductClientGroup } from "@/lib/jira/timelog-admin";
+import type { AdminTeamTimeLogSummary, AdminTimeLogOverview, AdminTimeLogWeek, ProductClientGroup } from "@/lib/jira/timelog-admin";
 
 interface SessionUser {
   accountId: string;
@@ -75,6 +75,11 @@ function currentIstTimestamp(): string {
   const minute = parts.find((part) => part.type === "minute")?.value ?? "00";
   const second = parts.find((part) => part.type === "second")?.value ?? "00";
   return `${todayIST()}T${hour}:${minute}:${second}.000+0530`;
+}
+
+function startOfCurrentMonthIST(): string {
+  const [year, month] = todayIST().split("-");
+  return `${year}-${month}-01`;
 }
 
 function formatShortDate(date: string): string {
@@ -360,6 +365,10 @@ export function TimeLogShell({ user, view }: { user: SessionUser; view: "team" |
   const showTeamView = user.role === "admin" && view === "team";
   const showMyView = user.role !== "admin" || view === "my";
   const [timeLoggingMenuOpen, setTimeLoggingMenuOpen] = useState(user.role === "admin");
+  const [teamSummaryFrom, setTeamSummaryFrom] = useState(startOfCurrentMonthIST);
+  const [teamSummaryTo, setTeamSummaryTo] = useState(todayIST);
+  const [teamSummaryDraftFrom, setTeamSummaryDraftFrom] = useState(startOfCurrentMonthIST);
+  const [teamSummaryDraftTo, setTeamSummaryDraftTo] = useState(todayIST);
 
   // Form state
   const [issueQuery, setIssueQuery] = useState("");
@@ -382,6 +391,9 @@ export function TimeLogShell({ user, view }: { user: SessionUser; view: "team" |
   const [historySummaries, setHistorySummaries] = useState<WorklogHistoryResponse["summaries"] | null>(null);
   const [adminOverview, setAdminOverview] = useState<AdminTimeLogOverview | null>(null);
   const [adminOverviewLoading, setAdminOverviewLoading] = useState(user.role === "admin");
+  const [teamSummary, setTeamSummary] = useState<AdminTeamTimeLogSummary | null>(null);
+  const [teamSummaryLoading, setTeamSummaryLoading] = useState(user.role === "admin");
+  const [teamSummaryError, setTeamSummaryError] = useState("");
   const [reportDownloading, setReportDownloading] = useState(false);
   const [reportError, setReportError] = useState("");
 
@@ -411,6 +423,33 @@ export function TimeLogShell({ user, view }: { user: SessionUser; view: "team" |
     loadHistory();
   }, [loadHistory, showMyView]);
 
+  const loadTeamSummary = useCallback((from: string, to: string) => {
+    if (user.role !== "admin") return;
+    setTeamSummaryLoading(true);
+    setTeamSummaryError("");
+
+    const params = new URLSearchParams({ from, to });
+    fetch(`/api/timelog/admin-summary?${params.toString()}`)
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          throw new Error((data as { error?: string }).error ?? "Failed to load team summary.");
+        }
+        return data as AdminTeamTimeLogSummary;
+      })
+      .then((data) => setTeamSummary(data))
+      .catch((error) => {
+        setTeamSummary(null);
+        setTeamSummaryError(error instanceof Error ? error.message : "Failed to load team summary.");
+      })
+      .finally(() => setTeamSummaryLoading(false));
+  }, [user.role]);
+
+  useEffect(() => {
+    if (!showTeamView) return;
+    loadTeamSummary(teamSummaryFrom, teamSummaryTo);
+  }, [loadTeamSummary, showTeamView, teamSummaryFrom, teamSummaryTo]);
+
   const loadAdminOverview = useCallback(() => {
     if (user.role !== "admin") return;
     setAdminOverviewLoading(true);
@@ -425,6 +464,16 @@ export function TimeLogShell({ user, view }: { user: SessionUser; view: "team" |
   useEffect(() => {
     loadAdminOverview();
   }, [loadAdminOverview]);
+
+  function applyTeamSummaryRange() {
+    if (teamSummaryDraftFrom > teamSummaryDraftTo) {
+      setTeamSummaryError("Start date cannot be after end date.");
+      return;
+    }
+
+    setTeamSummaryFrom(teamSummaryDraftFrom);
+    setTeamSummaryTo(teamSummaryDraftTo);
+  }
 
   const loadWeekData = useCallback((accountId: string, weekKey: string, from: string, to: string, endTimestamp?: string) => {
     const key = `${accountId}:${weekKey}`;
@@ -722,6 +771,72 @@ export function TimeLogShell({ user, view }: { user: SessionUser; view: "team" |
                   </div>
                 </div>
                 {reportError && <span className="timelog-error-msg">{reportError}</span>}
+
+                <div className="timelog-team-summary-section">
+                  <div className="section-row" style={{ marginBottom: 12 }}>
+                    <div>
+                      <div className="section-label">Team Summary</div>
+                      <p className="timelog-admin-sub">
+                        Separate custom range summary for users, logged time, and expected time.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="timelog-team-summary-toolbar">
+                    <div className="field-group">
+                      <label className="field-label" htmlFor="team-summary-from">From</label>
+                      <input
+                        id="team-summary-from"
+                        type="date"
+                        className="field-control"
+                        value={teamSummaryDraftFrom}
+                        onChange={(e) => setTeamSummaryDraftFrom(e.target.value)}
+                      />
+                    </div>
+                    <div className="field-group">
+                      <label className="field-label" htmlFor="team-summary-to">To</label>
+                      <input
+                        id="team-summary-to"
+                        type="date"
+                        className="field-control"
+                        value={teamSummaryDraftTo}
+                        max={todayIST()}
+                        onChange={(e) => setTeamSummaryDraftTo(e.target.value)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={applyTeamSummaryRange}
+                      disabled={teamSummaryLoading}
+                    >
+                      {teamSummaryLoading ? "Applying…" : "Apply range"}
+                    </button>
+                  </div>
+
+                  {teamSummaryError && <span className="timelog-error-msg">{teamSummaryError}</span>}
+
+                  <div className="summary-strip timelog-team-summary-grid">
+                    <div className="summary-card">
+                      <span className="summary-card-label">Total Users</span>
+                      <span className="summary-card-value">
+                        {teamSummaryLoading && !teamSummary ? "…" : (teamSummary?.totalUsers ?? "—")}
+                      </span>
+                    </div>
+                    <div className="summary-card">
+                      <span className="summary-card-label">Total Time Logged</span>
+                      <span className="summary-card-value">
+                        {teamSummaryLoading && !teamSummary ? "…" : (teamSummary ? secondsToHuman(teamSummary.totalLoggedSeconds) : "—")}
+                      </span>
+                    </div>
+                    <div className="summary-card last">
+                      <span className="summary-card-label">Total Expected Time Logged</span>
+                      <span className="summary-card-value">
+                        {teamSummaryLoading && !teamSummary ? "…" : (teamSummary ? secondsToHuman(teamSummary.totalExpectedSeconds) : "—")}
+                      </span>
+                    </div>
+                  </div>
+                </div>
 
                 {adminOverviewLoading ? (
                   <div className="timelog-admin-list">

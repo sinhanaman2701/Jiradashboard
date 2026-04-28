@@ -405,19 +405,8 @@ export async function getDashboardData(args: {
       userQuery: args.userQuery
     });
   } catch (error) {
-    console.error("Jira live fetch failed, using mock data instead:", error);
-    return buildData({
-      mode: "mock",
-      trackingView,
-      from,
-      to,
-      projectKeys: projectKeys.length ? projectKeys : mockProjectKeys(),
-      users: mockUsers,
-      worklogs: filterRange(mockWorklogs, from, to),
-      allWorklogs: mockWorklogs,
-      issueMap: mockIssueMap,
-      userQuery: args.userQuery
-    });
+    console.error("Jira live fetch failed:", error);
+    throw error;
   }
 }
 

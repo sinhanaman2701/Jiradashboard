@@ -69,6 +69,17 @@ export interface AdminTimeLogOverview {
   users: AdminTimeLogUser[];
 }
 
+export interface AdminTeamTimeLogSummary {
+  from: string;
+  to: string;
+  totalUsers: number;
+  totalLoggedSeconds: number;
+  totalExpectedSeconds: number;
+  totalLoggedHours: number;
+  totalExpectedHours: number;
+  generatedAt: string;
+}
+
 export interface AdminTimeLogReportTask {
   issueKey: string;
   issueSummary: string;
@@ -173,6 +184,20 @@ function buildReportTasks(
     if (b.loggedSeconds !== a.loggedSeconds) return b.loggedSeconds - a.loggedSeconds;
     return b.lastLoggedAt.localeCompare(a.lastLoggedAt);
   });
+}
+
+function workingWeekdaysInRange(from: string, to: string): number {
+  let count = 0;
+  const current = parseYmd(from);
+  const end = parseYmd(to);
+
+  while (current <= end) {
+    const day = current.getDay();
+    if (day !== 0 && day !== 6) count += 1;
+    current.setDate(current.getDate() + 1);
+  }
+
+  return count;
 }
 
 // Initial load — current week only (fast)
@@ -342,6 +367,48 @@ export async function getAdminUserWeekData(
   const productClientGroups = buildProductClientGroups(userLogs, issueMap);
 
   return { totalLoggedSeconds, productClientGroups };
+}
+
+export async function getAdminTeamSummary(args: {
+  from: string;
+  to: string;
+  endTimestamp?: string;
+}): Promise<AdminTeamTimeLogSummary> {
+  if (!isJiraConfigured()) {
+    return {
+      from: args.from,
+      to: args.to,
+      totalUsers: 0,
+      totalLoggedSeconds: 0,
+      totalExpectedSeconds: 0,
+      totalLoggedHours: 0,
+      totalExpectedHours: 0,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  const [users, issues] = await Promise.all([
+    getCachedUsers(),
+    searchIssuesWithWorklogs({ from: args.from, to: args.to }),
+  ]);
+  const activeUsers = users.filter((user) => user.active);
+  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+  const worklogs = await fetchWorklogsForDateRange(args.from, args.to, issueById, args.endTimestamp);
+
+  const totalLoggedSeconds = worklogs.reduce((sum, worklog) => sum + worklog.timeSpentSeconds, 0);
+  const workingDays = workingWeekdaysInRange(args.from, args.to);
+  const totalExpectedSeconds = activeUsers.length * workingDays * 8 * 3600;
+
+  return {
+    from: args.from,
+    to: args.to,
+    totalUsers: activeUsers.length,
+    totalLoggedSeconds,
+    totalExpectedSeconds,
+    totalLoggedHours: toHours(totalLoggedSeconds),
+    totalExpectedHours: toHours(totalExpectedSeconds),
+    generatedAt: new Date().toISOString(),
+  };
 }
 
 export async function getAdminTeamPeriodReport(args: {
